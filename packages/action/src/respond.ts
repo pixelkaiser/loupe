@@ -98,7 +98,7 @@ async function runFix(
     env,
     whipConfig: config.whipConfig,
     maxTurns: config.maxTurns,
-    cacheKey: `loupe/${config.owner}/${config.repo}/fix`,
+    cacheKey: `loupe/${ref.owner}/${ref.repo}/fix`,
     logger,
   });
 
@@ -150,12 +150,20 @@ function readCommentBody(eventPath: string): string | undefined {
 /**
  * Handle an `@loupe` mention on a PR comment: dispatch a command
  * (`review` / `help`) or answer a free-form question grounded in the diff.
- * A comment without the mention is ignored.
+ * A comment without the mention is ignored. GitHub-only: GitLab CI has no
+ * comment-triggered pipelines, so its entry never dispatches here — the guard
+ * keeps that honest even if one eventually does.
  */
 export async function handleComment(
   config: Config,
   logger: Logger,
 ): Promise<void> {
+  if (config.target.kind !== "github") {
+    logger.warn("@loupe chat commands are GitHub-only for now; ignoring", {
+      forge: config.target.kind,
+    });
+    return;
+  }
   if (!config.eventPath) return;
   const body = readCommentBody(config.eventPath);
   if (!body || !MENTION.test(body)) {
@@ -164,11 +172,7 @@ export async function handleComment(
   }
 
   const instruction = body.replace(MENTION, "").trim();
-  const ref = {
-    owner: config.owner,
-    repo: config.repo,
-    pull_number: config.pullNumber,
-  };
+  const ref = config.target.ref;
   const octokit = makeOctokit(config.token, logger);
 
   if (/^help\b/i.test(instruction) || instruction.length === 0) {
@@ -223,7 +227,7 @@ export async function handleComment(
       env,
       whipConfig: config.whipConfig,
       maxTurns: config.maxTurns,
-      cacheKey: `loupe/${config.owner}/${config.repo}/chat`,
+      cacheKey: `loupe/${ref.owner}/${ref.repo}/chat`,
       logger,
     });
     const answer = stdout.trim() || "I couldn't produce an answer for that.";

@@ -26,12 +26,16 @@ tasks:
   test:
     cmds:
       - ./node_modules/.bin/vitest run
+  verify:knowledge:
+    cmds:
+      - bun scripts/verify-knowledge.ts
   check:
     cmds:
       - task: format
       - task: lint
       - task: tsc
       - task: test
+      - task: verify:knowledge
   fix:
     cmds:
       - task: format:fix

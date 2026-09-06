@@ -1,5 +1,9 @@
 import {
+  makeGithubForge,
+  makeGitlabForge,
   runReview,
+  type Forge,
+  type ForgeBinding,
   type Profile,
   type ReasoningEffort,
   type ReviewResult,
@@ -11,11 +15,10 @@ import {
 import { getHarness, type WhipConfig } from "@loupe/harness";
 import type { Logger } from "@loupe/logger";
 
-export type RunInput = {
-  readonly token: string;
-  readonly owner: string;
-  readonly repo: string;
-  readonly pullNumber: number;
+import type { ForgeTarget } from "./config";
+
+/** Everything a review needs except the forge and its ref. */
+export type ReviewRunOptions = {
   readonly harnessName: string;
   readonly workdir: string;
   readonly conventionPaths: readonly string[];
@@ -41,9 +44,14 @@ export type RunInput = {
   readonly logger: Logger;
 };
 
+export type RunInput<R> = ReviewRunOptions & {
+  readonly forge: Forge<R>;
+  readonly ref: R;
+};
+
 /** Resolve the harness + its credentials, then review. Shared by Action and CLI. */
-export async function reviewPullRequest(
-  input: RunInput,
+export async function reviewPullRequest<R>(
+  input: RunInput<R>,
 ): Promise<ReviewResult> {
   const { logger } = input;
   const harness = getHarness(input.harnessName);
@@ -69,12 +77,8 @@ export async function reviewPullRequest(
   });
 
   return runReview({
-    token: input.token,
-    ref: {
-      owner: input.owner,
-      repo: input.repo,
-      pull_number: input.pullNumber,
-    },
+    forge: input.forge,
+    ref: input.ref,
     harness,
     workdir: input.workdir,
     harnessEnv,
@@ -99,6 +103,55 @@ export async function reviewPullRequest(
     maxTurns: input.maxTurns,
     logger,
   });
+}
+
+/** Build the live forge adapter for a config/CLI target. The entry layer calls
+ * this because forge factories need a logger, which config loading doesn't. */
+export function wireBinding(
+  target: ForgeTarget,
+  token: string,
+  logger: Logger,
+): ForgeBinding {
+  switch (target.kind) {
+    case "github":
+      return {
+        kind: "github",
+        forge: makeGithubForge(token, logger),
+        ref: target.ref,
+      };
+    case "gitlab":
+      return {
+        kind: "gitlab",
+        forge: makeGitlabForge({
+          baseUrl: target.apiUrl,
+          token,
+          logger,
+        }),
+        ref: target.ref,
+      };
+  }
+}
+
+/** Review through a `ForgeBinding` — the two branches only exist so the
+ * forge/ref pair narrows to matching concrete types for `runReview<R>`. */
+export function reviewBound(
+  binding: ForgeBinding,
+  options: ReviewRunOptions,
+): Promise<ReviewResult> {
+  switch (binding.kind) {
+    case "github":
+      return reviewPullRequest({
+        ...options,
+        forge: binding.forge,
+        ref: binding.ref,
+      });
+    case "gitlab":
+      return reviewPullRequest({
+        ...options,
+        forge: binding.forge,
+        ref: binding.ref,
+      });
+  }
 }
 
 export function formatResult(result: ReviewResult): string {

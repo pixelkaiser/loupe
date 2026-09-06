@@ -2,10 +2,10 @@ import type { Logger } from "@loupe/logger";
 
 import type { Config } from "./config";
 import { loadReviewers } from "./reviewers";
-import { formatResult, reviewPullRequest } from "./run";
+import { formatResult, reviewBound, wireBinding } from "./run";
 
 /**
- * Run the configured review(s) for a PR — either the reviewer profiles from
+ * Run the configured review(s) for a PR/MR — either the reviewer profiles from
  * `.loupe.json`, or a single default review. Shared by the pull_request entry
  * (main) and the `@loupe review` chat command. `overrideFull` forces a whole-PR
  * review regardless of config.
@@ -16,11 +16,8 @@ export async function runReviews(
   overrideFull?: boolean,
 ): Promise<void> {
   const full = overrideFull ?? config.full;
+  const binding = wireBinding(config.target, config.token, logger);
   const base = {
-    token: config.token,
-    owner: config.owner,
-    repo: config.repo,
-    pullNumber: config.pullNumber,
     harnessName: config.harnessName,
     workdir: config.workdir,
     conventionPaths: config.conventionPaths,
@@ -42,7 +39,7 @@ export async function runReviews(
     });
     await Promise.all(
       reviewers.map(async (r) => {
-        const result = await reviewPullRequest({
+        const result = await reviewBound(binding, {
           ...base,
           reviewerName: r.name,
           guidance: r.guidance,
@@ -68,7 +65,7 @@ export async function runReviews(
     return;
   }
 
-  const result = await reviewPullRequest({
+  const result = await reviewBound(binding, {
     ...base,
     model: config.model,
     reasoning: config.reasoning,

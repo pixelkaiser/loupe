@@ -1,7 +1,12 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-import type { Profile, ReasoningEffort } from "@loupe/core";
+import type {
+  MergeRequestRef,
+  Profile,
+  PullRef,
+  ReasoningEffort,
+} from "@loupe/core";
 import {
   dotenvProvider,
   envProvider,
@@ -21,17 +26,14 @@ const optionalInput = z
 
 /**
  * All environment reading happens here, parsed with Zod, then passed inward as
- * typed values. Nothing downstream touches process.env.
+ * typed values. Nothing downstream touches process.env. The forge is
+ * auto-detected: GitLab CI sets GITLAB_CI; anything else is GitHub (the
+ * original host, and the one GitHub Actions runs on).
  */
-const envSchema = z.object({
-  GITHUB_TOKEN: z.string().min(1, "GITHUB_TOKEN is required"),
-  GITHUB_REPOSITORY: z.string().regex(/^[^/]+\/[^/]+$/, "expected owner/repo"),
-  GITHUB_EVENT_PATH: z.string().optional(),
-  GITHUB_EVENT_NAME: z.string().optional(),
-  GITHUB_WORKSPACE: z.string().optional(),
-  LOUPE_PR_NUMBER: z.coerce.number().int().positive().optional(),
-  // Movable defaults: an unset input yields "" → undefined here, so a value in
-  // .loupe.json can win. Precedence (input → file → builtin) resolves below.
+
+// Movable defaults: an unset input yields "" → undefined here, so a value in
+// .loupe.json can win. Precedence (input → file → builtin) resolves below.
+const loupeEnvSchema = z.object({
   LOUPE_HARNESS: optionalInput,
   LOUPE_MODEL: optionalInput,
   LOUPE_REASONING: optionalInput,
@@ -60,6 +62,26 @@ const envSchema = z.object({
   LOUPE_MAX_TURNS: optionalInput,
 });
 
+const githubEnvSchema = loupeEnvSchema.extend({
+  GITHUB_TOKEN: z.string().min(1, "GITHUB_TOKEN is required"),
+  GITHUB_REPOSITORY: z.string().regex(/^[^/]+\/[^/]+$/, "expected owner/repo"),
+  GITHUB_EVENT_PATH: z.string().optional(),
+  GITHUB_EVENT_NAME: z.string().optional(),
+  GITHUB_WORKSPACE: z.string().optional(),
+  LOUPE_PR_NUMBER: z.coerce.number().int().positive().optional(),
+});
+
+const gitlabEnvSchema = loupeEnvSchema.extend({
+  GITLAB_TOKEN: z
+    .string()
+    .min(1, "GITLAB_TOKEN is required (project access token with api scope)"),
+  CI_PROJECT_PATH: z.string().optional(),
+  CI_PROJECT_ID: z.string().optional(),
+  CI_MERGE_REQUEST_IID: z.coerce.number().int().positive(),
+  CI_API_V4_URL: z.string().optional(),
+  CI_PROJECT_DIR: z.string().optional(),
+});
+
 function asMaxTurns(v: string | undefined): number | undefined {
   if (v === undefined) return undefined;
   const n = Number(v);
@@ -84,11 +106,23 @@ function asProfile(v: string | undefined): Profile | undefined {
   throw new Error(`Invalid profile "${v}". Use: ${PROFILES.join(", ")}`);
 }
 
+/**
+ * Which forge a run targets, minus the API client (that needs a logger, so
+ * `wireBinding` in run.ts builds the live `ForgeBinding` at the entry).
+ */
+export type ForgeTarget =
+  | { readonly kind: "github"; readonly ref: PullRef }
+  | {
+      readonly kind: "gitlab";
+      readonly ref: MergeRequestRef;
+      /** Instance origin, e.g. "https://gitlab.example.com". */
+      readonly apiUrl: string;
+    };
+
 export type Config = {
+  readonly target: ForgeTarget;
+  /** The forge API token (the GitHub chat/fix path also uses it to push). */
   readonly token: string;
-  readonly owner: string;
-  readonly repo: string;
-  readonly pullNumber: number;
   readonly harnessName: string;
   readonly workdir: string;
   readonly conventionPaths: readonly string[];
@@ -111,10 +145,68 @@ export type Config = {
   readonly eventPath?: string;
 };
 
+/**
+ * True under GitLab CI outside a merge-request pipeline (branch/tag/push):
+ * loupe has nothing to review there, so the entry should exit cleanly.
+ */
+export function isGitlabNonMrPipeline(): boolean {
+  return process.env.GITLAB_CI === "true" && !process.env.CI_MERGE_REQUEST_IID;
+}
+
 export function loadConfig(): Config {
-  const env = envSchema.parse(process.env);
+  // GitLab CI sets GITLAB_CI; anything else is GitHub (the original host, and
+  // the one GitHub Actions runs on).
+  if (process.env.GITLAB_CI === "true") {
+    const env = gitlabEnvSchema.parse(process.env);
+    const project = env.CI_PROJECT_PATH ?? env.CI_PROJECT_ID;
+    if (!project) {
+      throw new Error(
+        "GitLab mode needs CI_PROJECT_PATH or CI_PROJECT_ID to identify the project",
+      );
+    }
+    // CI_API_V4_URL is "https://host/api/v4"; the forge wants the origin.
+    const apiUrl = (env.CI_API_V4_URL ?? "https://gitlab.com/api/v4").replace(
+      /\/api\/v4\/?$/,
+      "",
+    );
+    return {
+      ...sharedConfig(env, env.CI_PROJECT_DIR ?? process.cwd()),
+      target: {
+        kind: "gitlab",
+        ref: { project, mrIid: env.CI_MERGE_REQUEST_IID },
+        apiUrl,
+      },
+      token: env.GITLAB_TOKEN,
+    };
+  }
+
+  const env = githubEnvSchema.parse(process.env);
   const [owner, repo] = env.GITHUB_REPOSITORY.split("/") as [string, string];
-  const workdir = env.GITHUB_WORKSPACE ?? process.cwd();
+  return {
+    ...sharedConfig(env, env.GITHUB_WORKSPACE ?? process.cwd()),
+    target: {
+      kind: "github",
+      ref: {
+        owner,
+        repo,
+        pull_number: resolvePullNumber(
+          env.LOUPE_PR_NUMBER,
+          env.GITHUB_EVENT_PATH,
+        ),
+      },
+    },
+    token: env.GITHUB_TOKEN,
+    eventName: env.GITHUB_EVENT_NAME,
+    eventPath: env.GITHUB_EVENT_PATH,
+  };
+}
+
+/** The forge-independent half of Config: .loupe.json defaults and the LOUPE_*
+ * inputs, resolved against the CI checkout. */
+function sharedConfig(
+  env: z.infer<typeof loupeEnvSchema>,
+  workdir: string,
+): Omit<Config, "target" | "token" | "eventName" | "eventPath"> {
   // Config/prompt paths are relative to the checked-out repo, not the action's
   // own cwd (the composite action runs from its own directory).
   const inWorkspace = (p: string): string => resolve(workdir, p);
@@ -127,10 +219,6 @@ export function loadConfig(): Config {
   const file: LoupeSettings = configPath ? loadSettings(configPath) : {};
 
   return {
-    token: env.GITHUB_TOKEN,
-    owner,
-    repo,
-    pullNumber: resolvePullNumber(env.LOUPE_PR_NUMBER, env.GITHUB_EVENT_PATH),
     harnessName: env.LOUPE_HARNESS ?? file.harness ?? "whip",
     workdir,
     conventionPaths: env.LOUPE_CONVENTION_PATHS.split(",")
@@ -157,8 +245,6 @@ export function loadConfig(): Config {
     timezone: env.LOUPE_TIMEZONE ?? file.timezone ?? "UTC",
     maxTurns: asMaxTurns(env.LOUPE_MAX_TURNS) ?? file.maxTurns,
     whipConfig: file.whip,
-    eventName: env.GITHUB_EVENT_NAME,
-    eventPath: env.GITHUB_EVENT_PATH,
   };
 }
 
@@ -211,7 +297,7 @@ export function resolveProviders(
 }
 
 function buildProviders(
-  env: z.infer<typeof envSchema>,
+  env: z.infer<typeof loupeEnvSchema>,
 ): readonly CredentialProvider[] {
   return resolveProviders(env.LOUPE_CREDENTIAL_PROVIDERS, {
     env: env.LOUPE_INFISICAL_ENV,

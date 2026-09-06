@@ -11,7 +11,8 @@
     "lint:fix": "oxlint --type-aware --fix",
     "tsc": "./node_modules/typescript-7/bin/tsc --build",
     "test": "vitest run",
-    "check": "bun format && bun lint && bun tsc && bun test"
+    "verify:knowledge": "bun scripts/verify-knowledge.ts",
+    "check": "bun format && bun lint && bun tsc && bun test && bun verify:knowledge"
   },
   "dependencies": {
     "@octokit/rest": "22.0.0",

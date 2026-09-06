@@ -5,6 +5,7 @@
     { "path": "./packages/harness" },
     { "path": "./packages/logger" },
     { "path": "./packages/core" },
-    { "path": "./packages/action" }
+    { "path": "./packages/action" },
+    { "path": "./scripts" }
   ]
 }

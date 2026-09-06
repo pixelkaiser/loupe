@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { createRootLogger, shutdownLogger } from "@loupe/logger";
 
-import { loadConfig } from "./config";
+import { isGitlabNonMrPipeline, loadConfig } from "./config";
 import { runReviews } from "./orchestrate";
 import { handleComment } from "./respond";
 
@@ -13,6 +13,12 @@ const COMMENT_EVENTS = new Set([
 ]);
 
 async function main(): Promise<void> {
+  // GitLab runs the same entry on branch/tag pipelines, where there is no MR
+  // to review — exit cleanly instead of failing the pipeline.
+  if (isGitlabNonMrPipeline()) {
+    logger.info("Not a merge-request pipeline; nothing to review");
+    return;
+  }
   const config = loadConfig();
   if (config.eventName && COMMENT_EVENTS.has(config.eventName)) {
     await handleComment(config, logger);

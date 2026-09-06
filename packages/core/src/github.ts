@@ -2,21 +2,26 @@ import { Octokit } from "@octokit/rest";
 
 import type { Logger } from "@loupe/logger";
 
-import type { DiffFile } from "./diff";
+import type {
+  Conventions,
+  Forge,
+  PostReviewOptions,
+  PullContext,
+} from "./forge";
+import {
+  makeMarker,
+  markerPrefix,
+  renderReviewBody,
+  SEV_EMOJI,
+  shaFromMarker,
+  statLine,
+} from "./render";
 import type { Finding, ReviewOutput } from "./types";
 
 export type PullRef = {
   readonly owner: string;
   readonly repo: string;
   readonly pull_number: number;
-};
-
-export type PullContext = {
-  readonly title: string;
-  readonly description: string;
-  readonly files: readonly DiffFile[];
-  /** The PR head commit SHA (what this review is of). */
-  readonly headSha: string;
 };
 
 /**
@@ -34,6 +39,30 @@ export function makeOctokit(token: string, logger: Logger): Octokit {
       error: (m) => logger.debug(m),
     },
   });
+}
+
+/**
+ * The GitHub forge: the octokit-backed functions below wrapped in the
+ * `Forge<PullRef>` interface `runReview` consumes. The chat/fix path
+ * (`packages/action/src/respond.ts`) still calls the functions directly —
+ * it is GitHub-only until GitLab chat exists.
+ */
+export function makeGithubForge(token: string, logger: Logger): Forge<PullRef> {
+  const octokit = makeOctokit(token, logger);
+  return {
+    name: "github",
+    describeRef: (ref) => `${ref.owner}/${ref.repo}#${ref.pull_number}`,
+    repoRef: (ref) => `${ref.owner}/${ref.repo}`,
+    fetchPullContext: (ref) => fetchPullContext(octokit, ref),
+    fetchConventions: (ref, paths) => fetchConventions(octokit, ref, paths),
+    getLastReviewedSha: (ref, reviewerName) =>
+      getLastReviewedSha(octokit, ref, reviewerName),
+    changedFilesBetween: (ref, base, head) =>
+      changedFilesBetween(octokit, ref, base, head),
+    postIssueComment: (ref, body) => postIssueComment(octokit, ref, body),
+    postReview: (ref, review, inline, dropped, opts) =>
+      postReview(octokit, ref, review, inline, dropped, logger, opts),
+  };
 }
 
 /** Fetch PR metadata and the changed files (with patches) in one place. */
@@ -71,8 +100,8 @@ export async function getLastReviewedSha(
     });
     for (const r of reviews.reverse()) {
       if (r.body?.includes(prefix)) {
-        const m = /sha=([0-9a-f]{7,40})/.exec(r.body);
-        if (m) return m[1];
+        const sha = shaFromMarker(r.body);
+        if (sha) return sha;
       }
     }
   } catch {
@@ -111,18 +140,6 @@ export async function changedFilesBetween(
   return new Set((data.files ?? []).map((f) => f.filename));
 }
 
-/**
- * Fetch the target repo's own convention docs at the PR head, in priority
- * order. Concatenated so the reviewer enforces the repo's actual rules rather
- * than a vendored copy. Missing files are skipped silently.
- */
-export type Conventions = {
-  /** Concatenated doc bodies for the prompt. */
-  readonly text: string;
-  /** Which requested paths actually resolved to a file at the PR head. */
-  readonly found: readonly string[];
-};
-
 export async function fetchConventions(
   octokit: Octokit,
   ref: PullRef,
@@ -150,15 +167,6 @@ export async function fetchConventions(
     }
   }
   return { text: parts.join("\n\n---\n\n"), found };
-}
-
-/** Per-reviewer marker prefix; the sha is appended per run. Comments and the
- * review body carry it so a later run can find and clean up its own output. */
-function markerPrefix(reviewerName: string | undefined): string {
-  return `<!-- loupe:${reviewerName ?? "default"} `;
-}
-function makeMarker(reviewerName: string | undefined, sha: string): string {
-  return `${markerPrefix(reviewerName)}sha=${sha} -->`;
 }
 
 /**
@@ -203,79 +211,6 @@ async function deletePriorComments(
   }
 }
 
-const SEV_EMOJI: Record<Finding["severity"], string> = {
-  blocker: "🔴",
-  warning: "🟡",
-  nit: "🔵",
-};
-
-/** One-line severity tally across inline findings + PR-level concerns. */
-function statLine(
-  inline: readonly Finding[],
-  review: ReviewOutput,
-  fileCount: number,
-): string {
-  const all = [...inline, ...review.concerns];
-  const n = (s: Finding["severity"]): number =>
-    all.filter((f) => f.severity === s).length;
-  const bits: string[] = [];
-  if (n("blocker")) bits.push(`🔴 ${n("blocker")}`);
-  if (n("warning")) bits.push(`🟡 ${n("warning")}`);
-  if (n("nit")) bits.push(`🔵 ${n("nit")}`);
-  if (bits.length === 0) bits.push("✅ no issues");
-  bits.push(`${fileCount} file${fileCount === 1 ? "" : "s"}`);
-  return bits.join(" · ");
-}
-
-/** Assemble the rich Markdown review body from the structured review output. */
-function renderReviewBody(
-  title: string,
-  stats: string,
-  review: ReviewOutput,
-  inline: readonly Finding[],
-  dropped: readonly Finding[],
-  tag: string,
-): string {
-  const parts: string[] = [`### 🔍 ${title}\n\n${stats}`];
-  if (review.summary.trim()) parts.push(review.summary.trim());
-
-  if (review.concerns.length > 0) {
-    parts.push(
-      `#### Concerns\n${review.concerns
-        .map(
-          (c) =>
-            `- ${SEV_EMOJI[c.severity]} **${c.title}** — ${c.detail.replace(/\n/g, " ")}`,
-        )
-        .join("\n")}`,
-    );
-  }
-  if (review.highlights.length > 0) {
-    parts.push(
-      `#### Highlights\n${review.highlights.map((h) => `- ✅ ${h}`).join("\n")}`,
-    );
-  }
-  if (inline.length > 0) {
-    parts.push(
-      `_${inline.length} inline comment${inline.length === 1 ? "" : "s"} on the diff below._`,
-    );
-  }
-  if (review.diagram) {
-    parts.push("```mermaid\n" + review.diagram + "\n```");
-  }
-  if (dropped.length > 0) {
-    parts.push(
-      `<details><summary>Other notes (${dropped.length})</summary>\n\n${dropped
-        .map(
-          (f) =>
-            `- ${SEV_EMOJI[f.severity]} \`${f.path}:${f.line}\` — ${f.body.replace(/\n/g, " ")}`,
-        )
-        .join("\n")}\n\n</details>`,
-    );
-  }
-  parts.push(tag);
-  return parts.join("\n\n");
-}
-
 /**
  * Post one review with inline comments. Uses REQUEST_CHANGES when any inline
  * finding is a blocker, otherwise COMMENT — never APPROVE (a bot shouldn't be a
@@ -283,16 +218,6 @@ function renderReviewBody(
  * clears this reviewer's comments from the previous run so re-reviews replace
  * rather than accumulate.
  */
-export type PostReviewOptions = {
-  readonly reviewerName?: string;
-  /** PR head SHA to stamp in the marker (for incremental review next time). */
-  readonly headSha: string;
-  /** Incremental review: only replace prior comments on these files. */
-  readonly refreshPaths?: ReadonlySet<string>;
-  /** Files in scope, for the stat line. */
-  readonly fileCount: number;
-};
-
 export async function postReview(
   octokit: Octokit,
   ref: PullRef,

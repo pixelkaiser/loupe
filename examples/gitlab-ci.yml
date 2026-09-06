@@ -1,0 +1,29 @@
+# loupe on GitLab CI — reviews merge requests with inline, line-anchored
+# comments. Copy this job into your repo's .gitlab-ci.yml (or `include:` it
+# remotely — see docs/gitlab.md).
+#
+# Setup:
+#   1. Create a project access token with the `api` scope (Maintainer role)
+#      and add it as a masked CI/CD variable named GITLAB_TOKEN.
+#   2. Make your harness CLI available on PATH in the job (e.g. install whip
+#      in a custom image, or add an install step before loupe runs).
+#   3. Optionally commit a .loupe.json for reviewer profiles; point LOUPE_CONFIG
+#      at it. Every LOUPE_* knob from the GitHub Action works here too.
+loupe-review:
+  image: oven/bun:1.3.14
+  rules:
+    # only merge-request pipelines; branch/tag pipelines are skipped
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  script:
+    # loupe is not published as an image yet — clone and run from source.
+    # $CI_PROJECT_DIR (the MR checkout) stays loupe's workdir.
+    - git clone --depth 1 https://github.com/context-labs/loupe.git /loupe
+    - cd /loupe && bun install --frozen-lockfile
+    - bun run packages/action/src/main.ts
+  variables:
+    # Harness config (or commit .loupe.json and set LOUPE_CONFIG: .loupe.json):
+    LOUPE_HARNESS: whip
+    # LOUPE_MODEL: kimi-k3
+    # LOUPE_REASONING: medium
+    # Harness keys ride the credential chain (default provider: env):
+    # INFERENCE_API_KEY / ANTHROPIC_API_KEY / ...

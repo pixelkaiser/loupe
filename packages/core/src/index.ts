@@ -11,15 +11,9 @@ import { join } from "node:path";
 import type { Harness, WhipConfig } from "@loupe/harness";
 import type { Logger } from "@loupe/logger";
 
-import {
-  changedFilesBetween,
-  fetchConventions,
-  fetchPullContext,
-  getLastReviewedSha,
-  makeOctokit,
-  postReview,
-  type PullRef,
-} from "./github";
+import type { PullRef } from "./github";
+import type { MergeRequestRef } from "./gitlab";
+import type { Forge } from "./forge";
 import { majority, mergeEnsemble } from "./ensemble";
 import { parseReviewOutput, parseVerification } from "./parse";
 import {
@@ -59,12 +53,30 @@ export * from "./diff";
 export * from "./prompt";
 export * from "./parse";
 export * from "./validate";
+export * from "./forge";
 export * from "./github";
+export * from "./gitlab";
+export * from "./render";
 export * from "./ensemble";
 
-export type ReviewRequest = {
-  readonly token: string;
-  readonly ref: PullRef;
+/** A concrete forge plus its matching ref — what an entry layer passes in. */
+export type ForgeBinding =
+  | {
+      readonly kind: "github";
+      readonly forge: Forge<PullRef>;
+      readonly ref: PullRef;
+    }
+  | {
+      readonly kind: "gitlab";
+      readonly forge: Forge<MergeRequestRef>;
+      readonly ref: MergeRequestRef;
+    };
+
+export type ReviewRequest<R> = {
+  /** The forge to fetch/post through (GitHub, GitLab, …). */
+  readonly forge: Forge<R>;
+  /** The PR/MR to review, in the forge's own ref shape. */
+  readonly ref: R;
   readonly harness: Harness;
   readonly workdir: string;
   /** Secrets to inject into the harness subprocess (e.g. ANTHROPIC_API_KEY). */
@@ -132,25 +144,27 @@ export type ReviewResult = {
 };
 
 /** End-to-end: fetch PR + conventions, run the harness, post the review. */
-export async function runReview(req: ReviewRequest): Promise<ReviewResult> {
+export async function runReview<R>(
+  req: ReviewRequest<R>,
+): Promise<ReviewResult> {
   const { logger } = req;
   const subdir = req.subdir?.replace(/^\/+|\/+$/g, "");
   const prefix = subdir ? `${subdir}/` : "";
   const conventionPaths = req.conventionPaths.map((p) => `${prefix}${p}`);
 
   logger.info("Reviewing pull request", {
-    repo: `${req.ref.owner}/${req.ref.repo}`,
-    pull: req.ref.pull_number,
+    target: req.forge.describeRef(req.ref),
+    forge: req.forge.name,
     reviewer: req.reviewerName ?? "default",
     harness: req.harness.name,
     subdir: subdir ?? null,
   });
 
-  const octokit = makeOctokit(req.token, logger);
+  const forge = req.forge;
   logger.debug("Fetching PR context and conventions", { conventionPaths });
   const [pull, conventions] = await Promise.all([
-    fetchPullContext(octokit, req.ref),
-    fetchConventions(octokit, req.ref, conventionPaths),
+    forge.fetchPullContext(req.ref),
+    forge.fetchConventions(req.ref, conventionPaths),
   ]);
 
   logger.info("Loaded PR", {
@@ -195,15 +209,10 @@ export async function runReview(req: ReviewRequest): Promise<ReviewResult> {
   let files = scopedFiles;
   let refreshPaths: Set<string> | undefined;
   if (!req.full) {
-    const priorSha = await getLastReviewedSha(
-      octokit,
-      req.ref,
-      req.reviewerName,
-    );
+    const priorSha = await forge.getLastReviewedSha(req.ref, req.reviewerName);
     if (priorSha && priorSha !== pull.headSha) {
       try {
-        const delta = await changedFilesBetween(
-          octokit,
+        const delta = await forge.changedFilesBetween(
           req.ref,
           priorSha,
           pull.headSha,
@@ -292,7 +301,7 @@ export async function runReview(req: ReviewRequest): Promise<ReviewResult> {
 
   // Stable prompt-cache key per repo+reviewer so whip reuses the cached system
   // prefix across runs (and its own turns within a run).
-  const cacheKey = `loupe/${req.ref.owner}/${req.ref.repo}/${req.reviewerName ?? "default"}`;
+  const cacheKey = `loupe/${req.forge.repoRef(req.ref)}/${req.reviewerName ?? "default"}`;
 
   // Noise profile: hard-filter by severity (the prompt asks too, this enforces).
   const keep = new Set(severitiesForProfile(profile));
@@ -436,7 +445,7 @@ export async function runReview(req: ReviewRequest): Promise<ReviewResult> {
     return result;
   }
 
-  await postReview(octokit, req.ref, reviewForPost, inline, dropped, logger, {
+  await forge.postReview(req.ref, reviewForPost, inline, dropped, {
     reviewerName: req.reviewerName,
     headSha: pull.headSha,
     refreshPaths,
@@ -454,8 +463,8 @@ export async function runReview(req: ReviewRequest): Promise<ReviewResult> {
 
 /** Ask the harness to verify each finding against the diff; drop the ones it
  * judges not real. One-shot (never agentic). Fail-open: on any error keep all. */
-async function verifyInline(
-  req: ReviewRequest,
+async function verifyInline<R>(
+  req: ReviewRequest<R>,
   files: readonly { path: string; patch: string | undefined }[],
   findings: readonly Finding[],
   harnessCwd: string,
@@ -470,7 +479,7 @@ async function verifyInline(
       env: req.harnessEnv,
       whipConfig: req.whipConfig,
       maxTurns: req.maxTurns,
-      cacheKey: `loupe/${req.ref.owner}/${req.ref.repo}/${req.reviewerName ?? "default"}/verify`,
+      cacheKey: `loupe/${req.forge.repoRef(req.ref)}/${req.reviewerName ?? "default"}/verify`,
       logger: req.logger,
     });
     const verdicts = parseVerification(stdout);

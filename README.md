@@ -1,12 +1,12 @@
 # loupe
 
 A harness- and model-agnostic AI pull-request reviewer. Define as many focused
-reviewers as you want, run them from your terminal or as a GitHub Action, and
-get **real GitHub reviews with inline, line-anchored comments** — not just a
-wall-of-text PR comment.
+reviewers as you want, run them from your terminal, a GitHub Action, or GitLab
+CI (self-hosted included), and get **real reviews with inline, line-anchored
+comments** — not just a wall-of-text PR comment.
 
 **Docs:** [`docs/`](docs/README.md) — user guide, configuration, credentials,
-GitHub Action, and the maintainer architecture reference.
+GitHub Action, GitLab, and the maintainer architecture reference.
 
 ## Why loupe
 
@@ -24,8 +24,9 @@ GitHub Action, and the maintainer architecture reference.
   you to their backend and their model; loupe doesn't — point it at a frontier
   closed model, a fast open one, or a whole panel of them.
 - **Local and CI are the same engine.** The exact review that runs in the GitHub
-  Action runs from your terminal with one command — `--dry-run` to preview
-  without posting. No separate local path to drift, no "works in CI only".
+  Action or GitLab CI job runs from your terminal with one command — `--dry-run`
+  to preview without posting. No separate local path to drift, no "works in CI
+  only".
 - **It reads the repo's own rules.** loupe enforces each repo's
   `CLAUDE.md` / `AGENTS.md` at review time — no vendored rulebook to copy around
   and keep in sync.
@@ -37,20 +38,21 @@ GitHub Action, and the maintainer architecture reference.
 ## How it works
 
 ```
-pull_request event  (or `loupe review` locally, or an @loupe comment)
+pull_request event / GitLab MR pipeline  (or `loupe review` locally, or an @loupe comment)
   └─ @loupe/action        reads config from env/flags, resolves harness credentials
-       ├─ @loupe/core     fetch PR + conventions → build prompt → run harness →
+       ├─ @loupe/core     fetch PR/MR + conventions → build prompt → run harness →
        │                  parse + validate findings against the diff →
-       │                  POST /pulls/{n}/reviews (inline comments + rich body)
+       │                  post the review (GitHub: one review w/ inline comments;
+       │                  GitLab: positioned discussions + summary note)
        ├─ @loupe/harness  the agent CLI as a subprocess (whip, claude, codex, …)
        └─ @loupe/credentials  provider chain: env → dotenv → infisical → your own
 ```
 
-A finding must anchor to a line that appears in the diff (GitHub 422s the whole
-review otherwise); off-diff findings snap to the nearest changed line or degrade
-to notes in the summary rather than failing the run. The review body is rendered
-from structured output — summary, concerns, highlights, and an optional
-diagram — not a restatement of the diff.
+A finding must anchor to a line that appears in the diff (the forges reject
+the whole review otherwise); off-diff findings snap to the nearest changed
+line or degrade to notes in the summary rather than failing the run. The
+review body is rendered from structured output — summary, concerns,
+highlights, and an optional diagram — not a restatement of the diff.
 
 ## Run it locally
 
@@ -64,7 +66,9 @@ ANTHROPIC_API_KEY=sk-... \
   bun run packages/action/src/cli.ts review owner/repo#123 --harness claude
 ```
 
-Token comes from `--token`, else `GITHUB_TOKEN`, else `gh auth token`.
+Token comes from `--token`, else `GITHUB_TOKEN`, else `gh auth token`. GitLab
+works too: `review group/project!N` or a MR URL on any host, with `GITLAB_TOKEN`
+or `glab auth token` — see [docs/gitlab.md](docs/gitlab.md).
 
 Key flags (defaults in parens): `--harness` (whip), `--model` (kimi-k3),
 `--reasoning low|medium|high` (low), `--profile quiet|chill|assertive` (chill),
@@ -178,6 +182,15 @@ the CLI flags: `harness`, `model`, `reasoning`, `profile`, `config`, `reviewer`,
 `prompt-file`, `dir`, `skills`, `ensemble`, `timezone`, `verify`, `full`,
 `convention-paths`, `credential-providers`, `github-token`.
 
+## GitLab integration
+
+The same engine runs on GitLab CI (self-hosted or gitlab.com): a
+merge-request-pipeline job posts the review as inline discussions plus a
+summary note, and the CLI reviews MRs directly. Setup is one masked
+`GITLAB_TOKEN` variable plus a copy-paste job —
+[docs/gitlab.md](docs/gitlab.md) · [examples/gitlab-ci.yml](examples/gitlab-ci.yml).
+`@loupe` chat is GitHub-only for now.
+
 ## Scope to a subdirectory
 
 For a monorepo, restrict the review to one folder — only changed files under it
@@ -215,9 +228,16 @@ collector is needed to run.
 
 ```
 bun install
-task check   # format + lint + tsc + test
+task check   # format + lint + tsc + test + verify:knowledge
 ```
 
 Bun workspace monorepo: `@loupe/credentials`, `@loupe/harness`, `@loupe/logger`,
 `@loupe/core`, `@loupe/action`. Tooling mirrors the inference monorepo
 (oxlint / oxfmt / typescript-7 / Taskfile).
+
+Agent-first repo: agents start at [`AGENTS.md`](AGENTS.md); the catalogue of
+docs/specs/skills with verification status is
+[`docs/knowledge-map.md`](docs/knowledge-map.md); non-trivial work gets an
+ExecPlan under [`docs/plans/`](docs/plans/README.md). `task verify:knowledge`
+mechanically re-checks links, map coverage, doc freshness, and plan format —
+CI (`.github/workflows/ci.yml`) runs the same on every PR.

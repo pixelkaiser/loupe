@@ -30,6 +30,9 @@ bun run packages/action/src/cli.ts review owner/repo#123
 
 # PR URL also works
 bun run packages/action/src/cli.ts review https://github.com/owner/repo/pull/123
+
+# GitLab MRs too (self-hosted URLs set the API host automatically)
+bun run packages/action/src/cli.ts review group/project!42
 ```
 
 Always start with `--dry-run` — it computes and prints the review without posting:
@@ -38,10 +41,12 @@ Always start with `--dry-run` — it computes and prints the review without post
 LOG_LEVEL=debug bun run packages/action/src/cli.ts review owner/repo#123 --dry-run
 ```
 
-## GitHub token
+## Tokens
 
-Resolved in order: `--token` → `GITHUB_TOKEN` → `gh auth token`. Needs
-`pull-requests: write` to post.
+- **GitHub**: resolved in order `--token` → `GITHUB_TOKEN` → `gh auth token`.
+  Needs `pull-requests: write` to post.
+- **GitLab**: resolved in order `--token` → `GITLAB_TOKEN` → `glab auth token`.
+  Needs the `api` scope ([GitLab details](gitlab.md)).
 
 ## CLI flags
 
@@ -64,7 +69,8 @@ Resolved in order: `--token` → `GITHUB_TOKEN` → `gh auth token`. Needs
 | `-p, --providers <spec>` | `env,dotenv` | Credential provider chain. |
 | `-w, --workdir <dir>` | cwd | Repo checkout the harness may explore. |
 | `--dry-run` | off | Compute + print, do not post. |
-| `-t, --token <token>` | — | GitHub token override. |
+| `-t, --token <token>` | — | Forge API token override (GitHub/GitLab). |
+| `--api <url>` | `https://gitlab.com` | GitLab instance origin for `group/project!N` shorthand. |
 | `--infisical-env`, `--infisical-project` | — | Infisical provider options. |
 
 ## Logging

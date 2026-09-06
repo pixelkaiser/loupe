@@ -127,10 +127,11 @@ Two scopes:
 
 ## What a review looks like
 
-loupe posts a real GitHub **review** (not a plain comment): a structured body
-plus inline, line-anchored comments. The review synthesizes — high-level
-summary, risks, bugs — rather than restating the diff (no file-by-file
-walkthrough).
+loupe posts a real **review** (not a plain comment): a structured body plus
+inline, line-anchored comments. On GitHub that is one review object; on GitLab
+it is one positioned discussion per finding plus a summary note
+([GitLab details](gitlab.md)). The review synthesizes — high-level summary,
+risks, bugs — rather than restating the diff (no file-by-file walkthrough).
 
 - **Body** — a stat line (🔴/🟡/🔵 counts · files), the summary, a **Concerns**
   section (PR-level risks not tied to a line), optional **Highlights**, an
@@ -145,4 +146,5 @@ walkthrough).
 Findings use `blocker` \| `warning` \| `nit`. Models often emit off-scale values
 (`major`, `critical`, `minor`, …); loupe normalizes them and defaults unknowns to
 `warning`. Any `blocker` among inline findings makes the verdict
-`REQUEST_CHANGES`.
+`REQUEST_CHANGES` (on GitLab, which has no such event, the verdict is stated in
+the summary note).

@@ -6,9 +6,9 @@ import type { Profile, ReasoningEffort } from "@loupe/core";
 import { createRootLogger, shutdownLogger } from "@loupe/logger";
 import { Command } from "commander";
 
-import { resolveProviders } from "./config";
+import { resolveProviders, type ForgeTarget } from "./config";
 import { loadReviewers, loadSettings } from "./reviewers";
-import { formatResult, renderReview, reviewPullRequest } from "./run";
+import { formatResult, renderReview, reviewBound, wireBinding } from "./run";
 
 const REASONING: readonly ReasoningEffort[] = ["low", "medium", "high"];
 
@@ -25,26 +25,70 @@ function parseProfile(raw: string): Profile {
   throw new Error(`Invalid --profile "${raw}". Use: ${PROFILES.join(", ")}`);
 }
 
-/** Parse owner/repo/number from a GitHub PR URL or an owner/repo#N shorthand. */
-function parsePr(input: string): {
-  owner: string;
-  repo: string;
-  pullNumber: number;
-} {
-  const match =
-    /github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/.exec(input) ??
-    /^([^/]+)\/([^#]+)#(\d+)$/.exec(input);
-  const [, owner, repo, number] = match ?? [];
-  if (owner && repo && number) {
-    return { owner, repo, pullNumber: Number(number) };
+/**
+ * Parse a review target: a GitHub PR URL or `owner/repo#N`, or a GitLab MR
+ * URL (any host — the host drives the API base for self-hosted instances) or
+ * `group/project!N` shorthand. Returns the config-shaped target plus the
+ * GitLab host when it was known from the URL (used for `glab auth`).
+ */
+function parseTarget(
+  input: string,
+  apiFlag?: string,
+): { target: ForgeTarget; host?: string } {
+  // GitHub PR URL
+  let m = /github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/.exec(input);
+  if (m?.[1] && m[2] && m[3]) {
+    return {
+      target: {
+        kind: "github",
+        ref: { owner: m[1], repo: m[2], pull_number: Number(m[3]) },
+      },
+    };
+  }
+  // GitLab MR URL — https://<host>/<group…>/<project>/-/merge_requests/N
+  m = /^(?:https?:\/\/)?([^/\s]+)\/(.+?)\/-\/merge_requests\/(\d+)\/?$/.exec(
+    input,
+  );
+  if (m?.[1] && m[2] && m[3]) {
+    const host = m[1];
+    return {
+      target: {
+        kind: "gitlab",
+        ref: { project: m[2], mrIid: Number(m[3]) },
+        apiUrl: apiFlag ?? `https://${host}`,
+      },
+      host,
+    };
+  }
+  // GitLab shorthand — group/project!N (nested groups allowed)
+  m = /^([^\s!?#]+)!(\d+)$/.exec(input);
+  if (m?.[1] && m[2]) {
+    return {
+      target: {
+        kind: "gitlab",
+        ref: { project: m[1], mrIid: Number(m[2]) },
+        apiUrl: apiFlag ?? "https://gitlab.com",
+      },
+    };
+  }
+  // GitHub shorthand — owner/repo#N
+  m = /^([^/]+)\/([^#]+)#(\d+)$/.exec(input);
+  if (m?.[1] && m[2] && m[3]) {
+    return {
+      target: {
+        kind: "github",
+        ref: { owner: m[1], repo: m[2], pull_number: Number(m[3]) },
+      },
+    };
   }
   throw new Error(
-    `Could not parse PR "${input}". Use a PR URL or owner/repo#123.`,
+    `Could not parse target "${input}". Use a GitHub PR URL or owner/repo#N, ` +
+      "or a GitLab MR URL or group/project!N.",
   );
 }
 
 /** GITHUB_TOKEN env, else the gh CLI's token. */
-function resolveToken(explicit?: string): string {
+function resolveGithubToken(explicit?: string): string {
   if (explicit) return explicit;
   if (process.env.GITHUB_TOKEN) return process.env.GITHUB_TOKEN;
   const res = spawnSync("gh", ["auth", "token"], { encoding: "utf8" });
@@ -57,17 +101,38 @@ function resolveToken(explicit?: string): string {
   return token;
 }
 
+/** GITLAB_TOKEN env, else the glab CLI's token (scoped to the MR's host). */
+function resolveGitlabToken(explicit?: string, host?: string): string {
+  if (explicit) return explicit;
+  if (process.env.GITLAB_TOKEN) return process.env.GITLAB_TOKEN;
+  const env =
+    host && host !== "gitlab.com"
+      ? { ...process.env, GITLAB_HOST: `https://${host}` }
+      : process.env;
+  const res = spawnSync("glab", ["auth", "token"], { encoding: "utf8", env });
+  const token = res.status === 0 ? res.stdout.trim() : "";
+  if (!token) {
+    throw new Error(
+      "No token: set GITLAB_TOKEN, pass --token, or run `glab auth login`.",
+    );
+  }
+  return token;
+}
+
 const program = new Command();
 
 program
   .name("loupe")
-  .description("AI PR reviewer that posts inline comments")
+  .description("AI PR/MR reviewer that posts inline comments (GitHub, GitLab)")
   .version("0.1.0");
 
 program
   .command("review")
-  .description("Review a pull request and post inline comments")
-  .argument("<pr>", "PR URL (github.com/owner/repo/pull/N) or owner/repo#N")
+  .description("Review a pull/merge request and post inline comments")
+  .argument(
+    "<pr>",
+    "GitHub PR URL or owner/repo#N · GitLab MR URL or group/project!N",
+  )
   .option("-H, --harness <name>", "agent CLI to review with (default whip)")
   .option("-m, --model <name>", "model id for the harness (default kimi-k3)")
   .option(
@@ -79,7 +144,14 @@ program
     "custom reviewer guidance replacing the default (output contract still enforced)",
   )
   .option("-p, --providers <spec>", "credential provider chain", "env,dotenv")
-  .option("-t, --token <token>", "GitHub token (else GITHUB_TOKEN or gh)")
+  .option(
+    "-t, --token <token>",
+    "forge API token (else GITHUB_TOKEN/GITLAB_TOKEN or gh/glab)",
+  )
+  .option(
+    "--api <url>",
+    "GitLab instance origin for shorthand refs (default https://gitlab.com)",
+  )
   .option(
     "-w, --workdir <dir>",
     "repo checkout the harness may read",
@@ -141,6 +213,7 @@ program
         promptFile?: string;
         providers: string;
         token?: string;
+        api?: string;
         workdir: string;
         conventions: string;
         dir?: string;
@@ -161,7 +234,12 @@ program
     ) => {
       const logger = createRootLogger("loupe-cli");
       try {
-        const { owner, repo, pullNumber } = parsePr(pr);
+        const { target, host } = parseTarget(pr, opts.api);
+        const token =
+          target.kind === "github"
+            ? resolveGithubToken(opts.token)
+            : resolveGitlabToken(opts.token, host);
+        const binding = wireBinding(target, token, logger);
         // Top-level review defaults from .loupe.json; a flag overrides the file,
         // the file overrides loupe's built-in default.
         const settings = opts.config ? loadSettings(opts.config) : {};
@@ -189,10 +267,6 @@ program
               .filter(Boolean)
           : undefined;
         const base = {
-          token: resolveToken(opts.token),
-          owner,
-          repo,
-          pullNumber,
           harnessName,
           workdir: opts.workdir,
           conventionPaths: opts.conventions
@@ -227,7 +301,7 @@ program
           });
           // Sequential: harnesses are heavy and may share rate limits.
           for (const r of reviewers) {
-            const result = await reviewPullRequest({
+            const result = await reviewBound(binding, {
               ...base,
               reviewerName: r.name,
               guidance: r.guidance,
@@ -250,7 +324,7 @@ program
           return;
         }
 
-        const result = await reviewPullRequest({
+        const result = await reviewBound(binding, {
           ...base,
           agentic: opts.agentic,
           model,
