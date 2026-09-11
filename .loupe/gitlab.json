@@ -1,0 +1,25 @@
+{
+  "harness": "whip",
+  "model": "deepseek-flash",
+  "timezone": "CET",
+  "maxTurns": 5,
+  "whip": {
+    "provider": {
+      "name": "deepseek",
+      "label": "DeepSeek",
+      "baseUrl": "https://api.deepseek.com/v1",
+      "apiKeyEnv": "DEEPSEEK_API_KEY"
+    },
+    "defaultModel": "deepseek-flash",
+    "models": ["deepseek-flash"]
+  },
+  "reviewers": [
+    {
+      "name": "code",
+      "promptFile": "reviewers/code.md",
+      "include": ["packages/**/*.ts", "action.yml"],
+      "exclude": ["**/*.test.ts", "**/tests/**", "**/dist/**"],
+      "reasoning": "medium"
+    }
+  ]
+}

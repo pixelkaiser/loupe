@@ -36,3 +36,17 @@ docker:image:mr:
     - docker build --pull -t loupe:mr .
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+
+# loupe reviews its own MRs with the image built above. Credentials come from
+# CI variables: GITLAB_TOKEN (project variable — a project access token with
+# api scope) posts the review; DEEPSEEK_API_KEY (group variable) reaches the
+# model via the whip provider panel in .loupe/gitlab.json.
+loupe-review:
+  stage: build
+  image: $CI_REGISTRY_IMAGE:main
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  variables:
+    LOUPE_CONFIG: .loupe/gitlab.json
+  script:
+    - bun run /loupe/packages/action/src/main.ts

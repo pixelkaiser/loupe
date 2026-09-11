@@ -35,9 +35,13 @@ include:
   remote: https://raw.githubusercontent.com/context-labs/loupe/main/examples/gitlab-ci.yml
 ```
 
-Your harness CLI must be on `PATH` in the job image, and harness keys come
-through the same [credential chain](credentials.md) as on GitHub
-(`LOUPE_CREDENTIAL_PROVIDERS`, default `env`).
+The prebuilt image (below) ships the default harness `whip` plus bun and
+git; if you build your own image or use a different harness, make sure its
+CLI is on `PATH`. Harness keys come through the same
+[credential chain](credentials.md) as on GitHub (`LOUPE_CREDENTIAL_PROVIDERS`,
+default `env`) — e.g. a group-level `DEEPSEEK_API_KEY` CI variable plus a
+`whip` provider block with `"apiKeyEnv": "DEEPSEEK_API_KEY"` in `.loupe.json`
+runs reviews on the DeepSeek API platform.
 
 Non-MR pipelines (branch/tag) are skipped cleanly — the job only needs the
 `merge_request_event` rule.
