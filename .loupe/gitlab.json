@@ -1,17 +1,17 @@
 {
   "harness": "whip",
-  "model": "deepseek-flash",
+  "model": "glm-5.3",
   "timezone": "CET",
   "maxTurns": 5,
   "whip": {
     "provider": {
-      "name": "deepseek",
-      "label": "DeepSeek",
-      "baseUrl": "https://api.deepseek.com/v1",
-      "apiKeyEnv": "DEEPSEEK_API_KEY"
+      "name": "zai",
+      "label": "Z.ai",
+      "baseUrl": "https://api.z.ai/api/paas/v4",
+      "apiKeyEnv": "ZAI_API_KEY"
     },
-    "defaultModel": "deepseek-flash",
-    "models": ["deepseek-flash"]
+    "defaultModel": "glm-5.3",
+    "models": ["glm-5.3"]
   },
   "reviewers": [
     {
