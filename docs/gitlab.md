@@ -42,6 +42,28 @@ through the same [credential chain](credentials.md) as on GitHub
 Non-MR pipelines (branch/tag) are skipped cleanly — the job only needs the
 `merge_request_event` rule.
 
+### Prebuilt image
+
+This repo also builds itself into a container image: `.gitlab-ci.yml` pushes
+`$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA` and `:main` to the project's
+container registry on every commit to the default branch (merge requests
+build the image without pushing). Use it as the job image instead of cloning
+loupe at review time:
+
+```yaml
+loupe-review:
+  image: registry.example.com/admetrics/loupe:main # your $CI_REGISTRY_IMAGE
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  script:
+    - bun run /loupe/packages/action/src/main.ts
+  variables:
+    LOUPE_HARNESS: whip # + harness keys, or LOUPE_CONFIG: .loupe.json
+```
+
+The image bundles bun 1.3.14 and git and installs the workspace with
+production dependencies; it needs a runner with Docker-in-Docker to build.
+
 ## CLI
 
 ```bash

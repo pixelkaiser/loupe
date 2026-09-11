@@ -15,8 +15,9 @@ loupe-review:
     # only merge-request pipelines; branch/tag pipelines are skipped
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
   script:
-    # loupe is not published as an image yet — clone and run from source.
-    # $CI_PROJECT_DIR (the MR checkout) stays loupe's workdir.
+    # Either clone and run from source (below), or use the image this repo
+    # builds of itself (.gitlab-ci.yml pushes it to the project registry) as
+    # the job image and just run: bun run /loupe/packages/action/src/main.ts
     - git clone --depth 1 https://github.com/context-labs/loupe.git /loupe
     - cd /loupe && bun install --frozen-lockfile
     - bun run packages/action/src/main.ts
