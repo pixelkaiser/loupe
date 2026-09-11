@@ -23,11 +23,14 @@ discussions on self-hosted versions — use a real token.
 
 ## CI job
 
-The job clones loupe, installs, and runs the same entry as the GitHub
-Action. loupe self-configures from GitLab's predefined variables
-(`CI_PROJECT_PATH`, `CI_MERGE_REQUEST_IID`, `CI_API_V4_URL`, `CI_PROJECT_DIR`),
-so a self-hosted instance needs no extra wiring — the job picks up its API
-URL automatically.
+The job runs loupe's image straight from the registry — the repo's own
+`.gitlab-ci.yml` builds it (`$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA` and
+`:main` on every commit to the default branch; merge requests build without
+pushing), bundling bun 1.3.14, git, and the whip harness with dependencies
+installed at `/loupe`. loupe self-configures from GitLab's predefined
+variables (`CI_PROJECT_PATH`, `CI_MERGE_REQUEST_IID`, `CI_API_V4_URL`,
+`CI_PROJECT_DIR`), so a self-hosted instance needs no extra wiring — the job
+picks up its API URL automatically.
 
 ```yaml
 include:
@@ -35,9 +38,9 @@ include:
   remote: https://raw.githubusercontent.com/context-labs/loupe/main/examples/gitlab-ci.yml
 ```
 
-The prebuilt image (below) ships the default harness `whip` plus bun and
-git; if you build your own image or use a different harness, make sure its
-CLI is on `PATH`. Harness keys come through the same
+Building your own image (e.g. to preinstall a different harness CLI) is one
+`docker build` with the [Dockerfile](../Dockerfile); it needs a runner with
+Docker-in-Docker. Harness keys come through the same
 [credential chain](credentials.md) as on GitHub (`LOUPE_CREDENTIAL_PROVIDERS`,
 default `env`) — e.g. a group-level `DEEPSEEK_API_KEY` CI variable plus a
 `whip` provider block with `"apiKeyEnv": "DEEPSEEK_API_KEY"` in `.loupe.json`
@@ -45,28 +48,6 @@ runs reviews on the DeepSeek API platform.
 
 Non-MR pipelines (branch/tag) are skipped cleanly — the job only needs the
 `merge_request_event` rule.
-
-### Prebuilt image
-
-This repo also builds itself into a container image: `.gitlab-ci.yml` pushes
-`$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA` and `:main` to the project's
-container registry on every commit to the default branch (merge requests
-build the image without pushing). Use it as the job image instead of cloning
-loupe at review time:
-
-```yaml
-loupe-review:
-  image: registry.example.com/admetrics/loupe:main # your $CI_REGISTRY_IMAGE
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-  script:
-    - bun run /loupe/packages/action/src/main.ts
-  variables:
-    LOUPE_HARNESS: whip # + harness keys, or LOUPE_CONFIG: .loupe.json
-```
-
-The image bundles bun 1.3.14 and git and installs the workspace with
-production dependencies; it needs a runner with Docker-in-Docker to build.
 
 ## CLI
 

@@ -4,27 +4,29 @@
 #
 # Setup:
 #   1. Create a project access token with the `api` scope (Maintainer role)
-#      and add it as a masked CI/CD variable named GITLAB_TOKEN.
-#   2. Make your harness CLI available on PATH in the job (e.g. install whip
-#      in a custom image, or add an install step before loupe runs).
-#   3. Optionally commit a .loupe.json for reviewer profiles; point LOUPE_CONFIG
-#      at it. Every LOUPE_* knob from the GitHub Action works here too.
+#      in the repo being reviewed, and add it as a masked CI/CD variable
+#      named GITLAB_TOKEN.
+#   2. Point `image:` at a loupe image. The one below is built by this
+#      repo's own CI (.gitlab-ci.yml pushes it to the project registry) and
+#      bundles bun 1.3.14, git, and the whip harness. Same-instance jobs can
+#      pull it directly; from another instance, log in to the registry first
+#      or build your own from the Dockerfile in this repo.
+#   3. Optionally commit a .loupe.json for reviewer profiles; point
+#      LOUPE_CONFIG at it. Every LOUPE_* knob from the GitHub Action works
+#      here too.
 loupe-review:
-  image: oven/bun:1.3.14
+  image: gitlab.nexttuesday.de:4567/admetrics/loupe:main
   rules:
     # only merge-request pipelines; branch/tag pipelines are skipped
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
   script:
-    # Either clone and run from source (below), or use the image this repo
-    # builds of itself (.gitlab-ci.yml pushes it to the project registry) as
-    # the job image and just run: bun run /loupe/packages/action/src/main.ts
-    - git clone --depth 1 https://github.com/context-labs/loupe.git /loupe
-    - cd /loupe && bun install --frozen-lockfile
-    - bun run packages/action/src/main.ts
+    # The image has loupe at /loupe with dependencies installed — just run
+    # the CI entry. $CI_PROJECT_DIR (the MR checkout) stays loupe's workdir.
+    - bun run /loupe/packages/action/src/main.ts
   variables:
     # Harness config (or commit .loupe.json and set LOUPE_CONFIG: .loupe.json):
     LOUPE_HARNESS: whip
-    # LOUPE_MODEL: kimi-k3
+    # LOUPE_MODEL: glm-5.3
     # LOUPE_REASONING: medium
     # Harness keys ride the credential chain (default provider: env):
-    # INFERENCE_API_KEY / ANTHROPIC_API_KEY / ...
+    # ZAI_API_KEY / DEEPSEEK_API_KEY / ANTHROPIC_API_KEY / ...
