@@ -6,10 +6,14 @@ import type { Finding, ReviewOutput } from "./types";
  * invisibly on both), `<details>` blocks, and Mermaid diagrams.
  */
 
-/** Per-reviewer marker prefix; the sha is appended per run. Comments and the
- * review body carry it so a later run can find and clean up its own output. */
+/** Per-reviewer marker prefixes: inline findings and the persistent summary.
+ * Comments and the summary carry them so a later run can find, clean up, or
+ * update its own output — and distinguish inline tags from summary tags. */
 export function markerPrefix(reviewerName: string | undefined): string {
   return `<!-- loupe:${reviewerName ?? "default"} `;
+}
+export function summaryMarkerPrefix(reviewerName: string | undefined): string {
+  return `<!-- loupe:summary:${reviewerName ?? "default"} `;
 }
 export function makeMarker(
   reviewerName: string | undefined,
@@ -17,11 +21,24 @@ export function makeMarker(
 ): string {
   return `${markerPrefix(reviewerName)}sha=${sha} -->`;
 }
+export function makeSummaryMarker(
+  reviewerName: string | undefined,
+  sha: string,
+): string {
+  return `${summaryMarkerPrefix(reviewerName)}sha=${sha} -->`;
+}
 
-/** Extract the sha a marker stamps; undefined when body carries none. */
-export function shaFromMarker(body: string): string | undefined {
-  const m = /sha=([0-9a-f]{7,40})/.exec(body);
-  return m ? m[1] : undefined;
+/** Extract the sha a given marker prefix stamps in a body; undefined when the
+ * body carries none (scoped to that marker, so unrelated text quoting a sha
+ * never matches). */
+export function shaFromMarker(
+  body: string | null | undefined,
+  prefix: string,
+): string | undefined {
+  if (!body) return undefined;
+  const start = body.indexOf(prefix);
+  if (start < 0) return undefined;
+  return /sha=([0-9a-f]{7,40})\s*-->/.exec(body.slice(start))?.[1];
 }
 
 export const SEV_EMOJI: Record<Finding["severity"], string> = {

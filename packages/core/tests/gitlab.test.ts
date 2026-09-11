@@ -97,6 +97,13 @@ const mrRoute: Route = {
   when: (u) => u.endsWith("/merge_requests/42"),
   json: MR,
 };
+/** GET /user — the identity "is this note mine" checks pair with the marker. */
+const userRoute: Route = {
+  path: "/user",
+  json: { username: "loupe-bot" },
+};
+const BOT = "loupe-bot";
+
 // The notes list (marker scan and cleanup) also hits /merge_requests/42 —
 // disambiguate from the MR itself by requiring the /notes suffix.
 const notesListRoute = (notes: unknown[]): Route => ({
@@ -147,24 +154,61 @@ describe("gitlab forge · fetchPullContext", () => {
 });
 
 describe("gitlab forge · incremental support", () => {
-  it("reads the last reviewed sha from the newest marker note", async () => {
+  it("reads the last reviewed sha from own summary note, else legacy marker", async () => {
     const { api } = forge([
+      userRoute,
       notesListRoute([
-        { id: 1, body: "unrelated discussion" },
+        { id: 1, body: "unrelated discussion", author: { username: "te" } },
         {
           id: 2,
-          body: "review body\n<!-- loupe:bugs sha=abc123def456 -->",
+          author: { username: BOT },
+          body: "review body\n<!-- loupe:summary:bugs sha=abc123def456 -->",
+        },
+        {
+          id: 3,
+          author: { username: BOT },
+          body: "legacy\n<!-- loupe:bugs sha=fff000fff111 -->",
         },
       ]),
     ]);
     expect(await api.getLastReviewedSha(REF, "bugs")).toBe("abc123def456");
   });
 
-  it("returns undefined when this reviewer never posted", async () => {
+  it("falls back to the legacy inline marker when no summary note exists", async () => {
     const { api } = forge([
+      userRoute,
+      notesListRoute([
+        {
+          id: 3,
+          author: { username: BOT },
+          body: "legacy\n<!-- loupe:bugs sha=fff000fff111 -->",
+        },
+      ]),
+    ]);
+    expect(await api.getLastReviewedSha(REF, "bugs")).toBe("fff000fff111");
+  });
+
+  it("ignores a human note quoting the marker (author guard)", async () => {
+    const { api } = forge([
+      userRoute,
       notesListRoute([
         {
           id: 1,
+          author: { username: "te" }, // not loupe
+          body: "quoting loupe:\n<!-- loupe:summary:bugs sha=abc123def456 -->",
+        },
+      ]),
+    ]);
+    expect(await api.getLastReviewedSha(REF, "bugs")).toBeUndefined();
+  });
+
+  it("returns undefined when this reviewer never posted", async () => {
+    const { api } = forge([
+      userRoute,
+      notesListRoute([
+        {
+          id: 1,
+          author: { username: BOT },
           body: "<!-- loupe:other sha=abc123def456 -->",
         },
       ]),
@@ -218,21 +262,35 @@ describe("gitlab forge · postReview", () => {
     highlights: [],
   };
 
-  it("deletes prior notes, posts positioned discussions, then the summary", async () => {
+  it("cleans up own prior notes (author-guarded), posts inline + new summary", async () => {
     const { api, calls } = forge([
+      userRoute,
       notesListRoute([
-        { id: 55, body: "old summary\n<!-- loupe:bugs sha=old -->" },
+        {
+          id: 55,
+          author: { username: BOT },
+          body: "old summary\n<!-- loupe:bugs sha=old -->",
+        },
         {
           id: 66,
+          author: { username: BOT },
           body: "old inline\n<!-- loupe:bugs sha=old -->",
           position: { new_path: "src/a.ts" },
         },
         {
           id: 77,
+          author: { username: BOT },
           body: "kept — file untouched\n<!-- loupe:bugs sha=old -->",
           position: { new_path: "src/other.ts" },
         },
-        { id: 88, body: "someone else's note" },
+        {
+          // human quoting loupe output on a refreshed file — author guard
+          // must keep it even though the marker matches
+          id: 88,
+          author: { username: "te" },
+          body: "quoting loupe\n<!-- loupe:bugs sha=old -->",
+          position: { new_path: "src/a.ts" },
+        },
       ]),
       { method: "DELETE", path: "/merge_requests/42/notes/55", json: {} },
       { method: "DELETE", path: "/merge_requests/42/notes/66", json: {} },
@@ -266,7 +324,8 @@ describe("gitlab forge · postReview", () => {
       },
     );
 
-    // cleanup kept the untouched file's note, dropped the rest of ours
+    // cleanup kept the untouched file's note and the human's quote, dropped
+    // the rest of ours
     const deletes = calls.filter((c) => c.method === "DELETE");
     expect(deletes.map((c) => c.url)).toEqual([
       expect.stringContaining("/notes/55"),
@@ -288,7 +347,8 @@ describe("gitlab forge · postReview", () => {
       new_line: 3,
     });
 
-    // summary note carries verdict, marker, and the blocker concern
+    // no prior summary note → a new persistent summary is created, carrying
+    // verdict, last-reviewed link, and the summary marker
     const note = calls.find(
       (c) => c.method === "POST" && c.url.endsWith("/notes"),
     );
@@ -296,12 +356,49 @@ describe("gitlab forge · postReview", () => {
       (note?.body as { body?: string } | undefined)?.body ?? "",
     );
     expect(body).toContain("**Verdict:** ⚠️ request changes");
-    expect(body).toContain("<!-- loupe:bugs sha=head1111 -->");
+    expect(body).toContain("<!-- loupe:summary:bugs sha=head1111 -->");
+    expect(body).toContain(
+      "Last reviewed commit: [`head111`](https://gitlab.example.com/group/proj/-/commit/head1111)",
+    );
     expect(body).toContain("No rollback");
+  });
+
+  it("updates the persistent summary in place when one exists", async () => {
+    const { api, calls } = forge([
+      userRoute,
+      notesListRoute([
+        {
+          id: 90,
+          author: { username: BOT },
+          body: "prior summary\n<!-- loupe:summary:bugs sha=old -->",
+        },
+      ]),
+      mrRoute,
+      { method: "PUT", path: "/merge_requests/42/notes/90", json: {} },
+    ]);
+
+    await api.postReview(
+      REF,
+      { summary: "s", findings: [], concerns: [], highlights: [] },
+      [],
+      [],
+      { reviewerName: "bugs", headSha: "head1111", fileCount: 1 },
+    );
+
+    const put = calls.find((c) => c.method === "PUT");
+    expect(put?.url).toContain("/notes/90");
+    expect(
+      String((put?.body as { body?: string } | undefined)?.body ?? ""),
+    ).toContain("<!-- loupe:summary:bugs sha=head1111 -->");
+    // and no new summary note was created
+    expect(
+      calls.some((c) => c.method === "POST" && c.url.endsWith("/notes")),
+    ).toBe(false);
   });
 
   it("demotes a finding whose position GitLab rejects instead of failing", async () => {
     const { api, calls } = forge([
+      userRoute,
       notesListRoute([]),
       mrRoute,
       {

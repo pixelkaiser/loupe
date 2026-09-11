@@ -127,16 +127,18 @@ Two scopes:
 
 ## What a review looks like
 
-loupe posts a real **review** (not a plain comment): a structured body plus
-inline, line-anchored comments. On GitHub that is one review object; on GitLab
-it is one positioned discussion per finding plus a summary note
+loupe posts inline, line-anchored findings as a real **review** with an empty
+body, and separately maintains one summary comment per reviewer — updating it
+in place on every re-review so stale summaries do not accumulate. On GitHub
+that is a review object plus a summary issue comment; on GitLab it is one
+positioned discussion per finding plus a summary note
 ([GitLab details](gitlab.md)). The review synthesizes — high-level summary,
 risks, bugs — rather than restating the diff (no file-by-file walkthrough).
 
-- **Body** — a stat line (🔴/🟡/🔵 counts · files), the summary, a **Concerns**
-  section (PR-level risks not tied to a line), optional **Highlights**, an
-  optional Mermaid diagram (only for a genuinely complex flow), and an "Other
-  notes" section for findings that couldn't be anchored.
+- **Summary comment** — a stat line (🔴/🟡/🔵 counts · files), the summary, a
+  **Concerns** section (PR-level risks not tied to a line), optional
+  **Highlights**, an optional Mermaid diagram (only for a genuinely complex
+  flow), and an "Other notes" section for findings that couldn't be anchored.
 - **Inline comments** — one per `finding`, on the exact diff line. If the model's
   line is a few off (common in agentic mode), loupe **snaps it to the nearest
   commentable line** rather than demoting it to a note, so findings land inline.

@@ -42,8 +42,9 @@ pull_request event / GitLab MR pipeline  (or `loupe review` locally, or an @loup
   └─ @loupe/action        reads config from env/flags, resolves harness credentials
        ├─ @loupe/core     fetch PR/MR + conventions → build prompt → run harness →
        │                  parse + validate findings against the diff →
-       │                  post the review (GitHub: one review w/ inline comments;
-       │                  GitLab: positioned discussions + summary note)
+       │                  post the review — GitHub: one review w/ inline comments
+       │                  + a persistent summary comment (updated in place);
+       │                  GitLab: positioned discussions + summary note
        ├─ @loupe/harness  the agent CLI as a subprocess (whip, claude, codex, …)
        └─ @loupe/credentials  provider chain: env → dotenv → infisical → your own
 ```

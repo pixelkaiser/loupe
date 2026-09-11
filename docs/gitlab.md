@@ -89,7 +89,7 @@ Everything else is forge-neutral: `.loupe.json` reviewers, `--dir`,
 |---|---|---|
 | Review object | one review with inline comments | one note per finding (positioned discussions) + a summary note |
 | Verdict | `REQUEST_CHANGES` / `COMMENT` review event | stated in the summary note body — GitLab has no "request changes" event, and loupe never approves |
-| Re-review cleanup | prior review comments deleted | prior loupe notes (summary + inline) deleted, then reposted |
+| Re-review cleanup | prior inline comments deleted; summary comment updated in place | prior inline notes deleted (author- and marker-guarded); summary note updated in place |
 | Chat (`@loupe fix`) | via comment-event workflows | not available — GitLab CI has no comment-triggered pipelines (needs a webhook receiver; see the ExecPlan non-goals) |
 
 Off-diff or stale anchors degrade exactly like on GitHub: a finding whose

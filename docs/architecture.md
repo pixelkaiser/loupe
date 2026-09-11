@@ -41,10 +41,12 @@ forge-shaped hangs off `forge.ts` adapters, and the entry layer picks which one.
    `path:line` is in the diff) and `dropped` (off-diff → summary notes). This is
    what prevents a hallucinated line from 422-ing the whole review.
 8. **Post** — dry-run logs and returns; otherwise the forge deletes this
-   reviewer's prior comments (marker-based de-dup) and posts: GitHub one review
-   with inline comments (`REQUEST_CHANGES` if any blocker, else `COMMENT`);
-   GitLab one positioned discussion per finding plus a summary note carrying
-   the verdict (no such event exists there).
+   reviewer's prior inline comments (author- and marker-guarded), posts the
+   new inline findings, and creates or updates the reviewer's persistent
+   summary. GitHub: an empty-body review (`REQUEST_CHANGES` on any blocker,
+   else `COMMENT`) plus a summary issue comment updated in place; GitLab: one
+   positioned discussion per finding plus a summary note updated in place
+   (verdict stated in the body — no such event exists there).
 
 ### core files
 

@@ -3,11 +3,13 @@ import type { Logger } from "@loupe/logger";
 import type { Conventions, Forge, PostReviewOptions } from "./forge";
 import {
   makeMarker,
+  makeSummaryMarker,
   markerPrefix,
   renderReviewBody,
   SEV_EMOJI,
   shaFromMarker,
   statLine,
+  summaryMarkerPrefix,
 } from "./render";
 import type { Finding, ReviewOutput } from "./types";
 
@@ -42,6 +44,7 @@ type MrChange = { readonly new_path: string; readonly diff: string | null };
 type MrNote = {
   readonly id: number;
   readonly body: string;
+  readonly author?: { readonly username?: string } | null;
   readonly position?: { readonly new_path?: string } | null;
 };
 
@@ -73,6 +76,18 @@ export function makeGitlabForge(
 
   async function getJson<T>(path: string): Promise<T> {
     return (await api(path)).json() as Promise<T>;
+  }
+
+  /** GitLab tokens (PAT or project token) answer GET /user; cache it. Marker
+   * text alone is not proof of authorship — a human quoting loupe output
+   * carries the marker too — so "is this mine" checks pair the marker with
+   * this username. If lookup fails, fall back to marker-only matching. */
+  let selfUsername: Promise<string | undefined> | undefined;
+  function getSelfUsername(): Promise<string | undefined> {
+    selfUsername ??= getJson<{ username?: string }>("/user")
+      .then((u) => u.username)
+      .catch(() => undefined);
+    return selfUsername;
   }
 
   const pid = (ref: MergeRequestRef): string =>
@@ -158,13 +173,14 @@ export function makeGitlabForge(
     },
 
     getLastReviewedSha: async (ref, reviewerName) => {
-      const prefix = markerPrefix(reviewerName);
       try {
+        const self = await getSelfUsername();
         for (const note of await listNotes(ref)) {
-          if (note.body.includes(prefix)) {
-            const sha = shaFromMarker(note.body);
-            if (sha) return sha;
-          }
+          if (self && note.author?.username !== self) continue;
+          const sha =
+            shaFromMarker(note.body, summaryMarkerPrefix(reviewerName)) ??
+            shaFromMarker(note.body, markerPrefix(reviewerName));
+          if (sha) return sha;
         }
       } catch {
         // treat as no prior review
@@ -194,10 +210,13 @@ export function makeGitlabForge(
   };
 
   /**
-   * Delete this forge's notes from a previous run — summary notes always
-   * (GitLab notes accumulate; there is no review object to supersede them),
-   * inline diff notes only on `refreshPaths` files when set, so incremental
-   * runs keep comments on untouched files. Best-effort: never blocks posting.
+   * Delete this forge's inline diff notes from a previous run so re-reviews
+   * replace rather than duplicate — plus legacy marker-tagged summary notes.
+   * Only notes posted under loupe's own user qualify; a human note that quotes
+   * the marker is left alone. The persistent summary (summary-marker tag) is
+   * NOT deleted — postNotes updates it in place. When `refreshPaths` is set
+   * (incremental), inline notes on untouched files are kept. Best-effort:
+   * never blocks posting.
    */
   async function deletePriorNotes(
     ref: MergeRequestRef,
@@ -205,8 +224,10 @@ export function makeGitlabForge(
   ): Promise<void> {
     const prefix = markerPrefix(opts.reviewerName);
     try {
+      const self = await getSelfUsername();
       const mine = (await listNotes(ref)).filter(
         (n) =>
+          (!self || n.author?.username === self) &&
           n.body.includes(prefix) &&
           (n.position == null ||
             !opts.refreshPaths ||
@@ -296,6 +317,8 @@ export function makeGitlabForge(
     const title = opts.reviewerName
       ? `loupe · ${opts.reviewerName}`
       : "loupe review";
+    const summaryTag = makeSummaryMarker(opts.reviewerName, opts.headSha);
+    const lastReviewed = `Last reviewed commit: [\`${opts.headSha.slice(0, 7)}\`](${root}/${ref.project}/-/commit/${opts.headSha})`;
     const stats = statLine(inline, review, opts.fileCount);
     const verdict = hasBlocker ? "⚠️ request changes" : "💬 comment";
     const body = `**Verdict:** ${verdict}\n\n${renderReviewBody(
@@ -304,11 +327,27 @@ export function makeGitlabForge(
       review,
       posted,
       [...dropped, ...demoted],
-      tag,
+      `${lastReviewed}\n\n${summaryTag}`,
     )}`;
-    await api(`/projects/${pid(ref)}/merge_requests/${ref.mrIid}/notes`, {
-      method: "POST",
-      body: JSON.stringify({ body }),
-    });
+
+    // Create or update this reviewer's persistent summary note (updated in
+    // place so the MR thread list doesn't grow on every re-review).
+    const self = await getSelfUsername();
+    const prior = (await listNotes(ref)).find(
+      (n) =>
+        (!self || n.author?.username === self) &&
+        n.body.includes(summaryMarkerPrefix(opts.reviewerName)),
+    );
+    if (prior) {
+      await api(
+        `/projects/${pid(ref)}/merge_requests/${ref.mrIid}/notes/${prior.id}`,
+        { method: "PUT", body: JSON.stringify({ body }) },
+      );
+    } else {
+      await api(`/projects/${pid(ref)}/merge_requests/${ref.mrIid}/notes`, {
+        method: "POST",
+        body: JSON.stringify({ body }),
+      });
+    }
   }
 }
