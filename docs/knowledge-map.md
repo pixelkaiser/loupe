@@ -71,15 +71,14 @@ be indexed here.
 
 **Active**
 
-| Plan | What it does |
-| --- | --- |
-| [docs/plans/active/0002-gitlab-support.md](plans/active/0002-gitlab-support.md) | GitLab support: `Forge` interface, GitLab adapter, CI/CLI entries, docs |
+_none_
 
 **Completed**
 
 | Plan | What it did |
 | --- | --- |
 | [docs/plans/completed/0001-harness-engineering-playbook.md](plans/completed/0001-harness-engineering-playbook.md) | adopted the agent-legibility playbook: AGENTS.md, ExecPlans, this map, verifier + CI |
+| [docs/plans/completed/0002-gitlab-support.md](plans/completed/0002-gitlab-support.md) | GitLab support: `Forge` interface, GitLab adapter, CI/CLI entries, docs; verified live on a self-hosted instance (MR review with inline positioned discussions) |
 
 **Debt** — [plans/debt.md](plans/debt.md) (DEBT-001 action tests,
 DEBT-002 credentials and logger tests, DEBT-003 config-doc drift).

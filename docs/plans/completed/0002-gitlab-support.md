@@ -1,9 +1,9 @@
 ---
 id: 0002
 title: Add self-hosted GitLab support
-status: active
+status: completed
 created: 2026-09-01
-updated: 2026-09-01
+updated: 2026-09-11
 owner: agent
 ---
 
@@ -92,6 +92,13 @@ Manual, once a real instance is available: dry-run against a real MR
 https://<host>/group/project/-/merge_requests/<n> --dry-run`) and a
 pre-flight `POST /discussions` position check on that instance.
 
+**Done 2026-09-11** on gitlab.nexttuesday.de (admetrics/loupe, MR !1,
+reviewer `code` on `deepseek-flash` via the prebuilt registry image):
+the `loupe-review` job posted the summary note (verdict + stat line +
+marker) and an inline positioned discussion anchored to the exact
+offending line — verdict rendering, markers, and position payloads all
+confirmed against the live instance.
+
 ## Progress log
 
 Append-only, dated. One line per meaningful change of state is plenty.
@@ -111,3 +118,5 @@ Append-only, dated. One line per meaningful change of state is plenty.
   README/AGENTS/architecture/guide/configuration/knowledge-map updated.
   `bun run check` green (90 tests, 0 lint/tsc/format errors, knowledge
   verified). Remaining: the real-instance manual verification above.
+- 2026-09-11 — real-instance verification done (details in Verification);
+  container image + self-review CI landed (9beb7b2); plan completed.
