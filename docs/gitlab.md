@@ -42,9 +42,11 @@ Building your own image (e.g. to preinstall a different harness CLI) is one
 `docker build` with the [Dockerfile](../Dockerfile); it needs a runner with
 Docker-in-Docker. Harness keys come through the same
 [credential chain](credentials.md) as on GitHub (`LOUPE_CREDENTIAL_PROVIDERS`,
-default `env`) — e.g. a group-level `DEEPSEEK_API_KEY` CI variable plus a
-`whip` provider block with `"apiKeyEnv": "DEEPSEEK_API_KEY"` in `.loupe.json`
-runs reviews on the DeepSeek API platform.
+default `env`). The default model needs no project wiring at all: it is
+`deepseek-flash` on loupe's built-in DeepSeek whip panel, so a group-level
+`DEEPSEEK_API_KEY` CI variable is enough for every project to review out of
+the box. Other providers/models need a `whip` provider block with the right
+`apiKeyEnv` in `.loupe.json`.
 
 Non-MR pipelines (branch/tag) are skipped cleanly — the job only needs the
 `merge_request_event` rule.

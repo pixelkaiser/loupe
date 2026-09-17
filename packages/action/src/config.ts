@@ -94,6 +94,40 @@ function asMaxTurns(v: string | undefined): number | undefined {
 const REASONING = ["low", "medium", "high"] as const;
 const PROFILES = ["quiet", "chill", "assertive"] as const;
 
+/**
+ * The model a project gets when it sets neither `model` nor a `.loupe.json`.
+ * Must be one the built-in whip panel below can reach, so a bare checkout
+ * reviews out of the box with just an API key in the environment.
+ */
+export const DEFAULT_MODEL = "deepseek-flash";
+
+/**
+ * whip's own catalog routes every model through inference-net, so loupe
+ * materializes this DeepSeek panel whenever a project declares no `whip`
+ * block of its own — the default model then works with a plain
+ * `DEEPSEEK_API_KEY` in the environment (CI group variables included).
+ * Model ids are the ones api.deepseek.com actually serves.
+ */
+export const DEEPSEEK_PANEL: WhipConfig = {
+  provider: {
+    name: "deepseek",
+    label: "DeepSeek",
+    baseUrl: "https://api.deepseek.com/v1",
+    apiKeyEnv: "DEEPSEEK_API_KEY",
+  },
+  defaultModel: "deepseek-flash",
+  models: ["deepseek-flash", "deepseek-v4-pro"],
+};
+
+/**
+ * The whip panel for a model when the project didn't declare one: the
+ * built-in DeepSeek panel for its models, none otherwise (whip then falls
+ * back to its own login/catalog, as before).
+ */
+export function builtinWhipPanel(model: string): WhipConfig | undefined {
+  return DEEPSEEK_PANEL.models.includes(model) ? DEEPSEEK_PANEL : undefined;
+}
+
 function asReasoning(v: string | undefined): ReasoningEffort | undefined {
   if (v === undefined) return undefined;
   if ((REASONING as readonly string[]).includes(v)) return v as ReasoningEffort;
@@ -217,6 +251,7 @@ function sharedConfig(
   // Top-level review defaults from .loupe.json. Precedence for the movable
   // settings: Action input (explicit) → file → loupe's built-in default.
   const file: LoupeSettings = configPath ? loadSettings(configPath) : {};
+  const model = env.LOUPE_MODEL ?? file.model ?? DEFAULT_MODEL;
 
   return {
     harnessName: env.LOUPE_HARNESS ?? file.harness ?? "whip",
@@ -226,7 +261,7 @@ function sharedConfig(
       .filter(Boolean),
     providers: buildProviders(env),
     subdir: env.LOUPE_DIR ?? file.dir,
-    model: env.LOUPE_MODEL ?? file.model ?? "kimi-k3",
+    model,
     reasoning: asReasoning(env.LOUPE_REASONING) ?? file.reasoning ?? "low",
     guidance: env.LOUPE_PROMPT_FILE
       ? readFileSync(inWorkspace(env.LOUPE_PROMPT_FILE), "utf8")
@@ -244,7 +279,7 @@ function sharedConfig(
       .filter(Boolean),
     timezone: env.LOUPE_TIMEZONE ?? file.timezone ?? "UTC",
     maxTurns: asMaxTurns(env.LOUPE_MAX_TURNS) ?? file.maxTurns,
-    whipConfig: file.whip,
+    whipConfig: file.whip ?? builtinWhipPanel(model),
   };
 }
 

@@ -29,10 +29,10 @@ jobs:
       - uses: context-labs/loupe@v0
         with:
           harness: whip
-          model: kimi-k3
+          model: deepseek-flash
           config: .loupe.json
         env:
-          INFERENCE_API_KEY: ${{ secrets.INFERENCE_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
 ```
 
 See `examples/review.example.yml` for whip / claude / custom-prompt

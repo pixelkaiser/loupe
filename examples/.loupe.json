@@ -1,24 +1,17 @@
 {
   "harness": "whip",
-  "model": "kimi-k3",
+  "model": "deepseek-flash",
   "timezone": "PST",
   "dir": "inference",
   "whip": {
     "provider": {
-      "name": "inference-net",
-      "label": "Inference.net",
-      "baseUrl": "https://api.inference.net/v1",
-      "apiKeyEnv": "INFERENCE_API_KEY"
+      "name": "deepseek",
+      "label": "DeepSeek",
+      "baseUrl": "https://api.deepseek.com/v1",
+      "apiKeyEnv": "DEEPSEEK_API_KEY"
     },
-    "defaultModel": "kimi-k3",
-    "models": [
-      "kimi-k3",
-      "kimi-k3-fast",
-      "glm-5.3-flash",
-      "glm-5.2-fast",
-      "deepseek-v4-pro-0813",
-      "gpt-5.6-luna"
-    ]
+    "defaultModel": "deepseek-flash",
+    "models": ["deepseek-flash", "deepseek-v4-pro"]
   },
   "reviewers": [
     {

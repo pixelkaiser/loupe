@@ -10,13 +10,14 @@ inputs:
     default: ${{ github.token }}
   # harness/model/reasoning/profile/timezone/dir default to empty so a value in
   # .loupe.json wins; set an input here only to override the file. Built-in
-  # fallbacks (whip / kimi-k3 / low / chill / UTC) apply when neither is set.
+  # fallbacks (whip / deepseek-flash / low / chill / UTC) apply when neither is
+  # set.
   harness:
     description: "Which agent CLI to review with (whip, claude, codex). Overrides .loupe.json; default whip."
     required: false
     default: ""
   model:
-    description: "Model id for the harness (e.g. kimi-k3, claude-opus-4-8). Overrides .loupe.json; default kimi-k3."
+    description: "Model id for the harness (e.g. deepseek-flash, claude-opus-4-8). Overrides .loupe.json; default deepseek-flash via the built-in DeepSeek whip panel (DEEPSEEK_API_KEY)."
     required: false
     default: ""
   reasoning:

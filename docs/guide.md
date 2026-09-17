@@ -25,7 +25,7 @@ Requires [Bun](https://bun.sh) 1.3.14 and a harness CLI on `PATH` (default:
 ## Run a review locally
 
 ```bash
-# defaults: whip harness, kimi-k3, low reasoning, agentic
+# defaults: whip harness, deepseek-flash, low reasoning, agentic
 bun run packages/action/src/cli.ts review owner/repo#123
 
 # PR URL also works
@@ -47,13 +47,17 @@ LOG_LEVEL=debug bun run packages/action/src/cli.ts review owner/repo#123 --dry-r
   Needs `pull-requests: write` to post.
 - **GitLab**: resolved in order `--token` → `GITLAB_TOKEN` → `glab auth token`.
   Needs the `api` scope ([GitLab details](gitlab.md)).
+- **Model**: the default `deepseek-flash` runs through loupe's built-in
+  DeepSeek whip panel and needs `DEEPSEEK_API_KEY` in the environment. Other
+  models need their provider's key, or declare a `whip` panel in
+  `.loupe.json` ([configuration](configuration.md)).
 
 ## CLI flags
 
 | Flag | Default | Purpose |
 |---|---|---|
 | `-H, --harness <name>` | `whip` | Agent CLI: `whip`, `claude`, `codex`. |
-| `-m, --model <name>` | `kimi-k3` | Model id passed to the harness. |
+| `-m, --model <name>` | `deepseek-flash` | Model id passed to the harness. |
 | `-r, --reasoning <level>` | `low` | `low` \| `medium` \| `high`. |
 | `--no-agentic` | (agentic on) | Review one-shot from the diff, no tool use. |
 | `--profile <name>` | `chill` | Noise: `quiet` \| `chill` \| `assertive`. |

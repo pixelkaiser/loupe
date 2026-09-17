@@ -6,7 +6,12 @@ import type { Profile, ReasoningEffort } from "@loupe/core";
 import { createRootLogger, shutdownLogger } from "@loupe/logger";
 import { Command } from "commander";
 
-import { resolveProviders, type ForgeTarget } from "./config";
+import {
+  builtinWhipPanel,
+  DEFAULT_MODEL,
+  resolveProviders,
+  type ForgeTarget,
+} from "./config";
 import { loadReviewers, loadSettings } from "./reviewers";
 import { formatResult, renderReview, reviewBound, wireBinding } from "./run";
 
@@ -134,7 +139,10 @@ program
     "GitHub PR URL or owner/repo#N · GitLab MR URL or group/project!N",
   )
   .option("-H, --harness <name>", "agent CLI to review with (default whip)")
-  .option("-m, --model <name>", "model id for the harness (default kimi-k3)")
+  .option(
+    "-m, --model <name>",
+    `model id for the harness (default ${DEFAULT_MODEL})`,
+  )
   .option(
     "-r, --reasoning <level>",
     "reasoning effort: low|medium|high (default low)",
@@ -244,7 +252,7 @@ program
         // the file overrides loupe's built-in default.
         const settings = opts.config ? loadSettings(opts.config) : {};
         const harnessName = opts.harness ?? settings.harness ?? "whip";
-        const model = opts.model ?? settings.model ?? "kimi-k3";
+        const model = opts.model ?? settings.model ?? DEFAULT_MODEL;
         const reasoning = parseReasoning(
           opts.reasoning ?? settings.reasoning ?? "low",
         );
@@ -285,7 +293,7 @@ program
           skills,
           timezone,
           maxTurns,
-          whipConfig: settings.whip,
+          whipConfig: settings.whip ?? builtinWhipPanel(model),
         };
 
         if (opts.config) {

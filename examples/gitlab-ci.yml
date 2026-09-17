@@ -26,7 +26,9 @@ loupe-review:
   variables:
     # Harness config (or commit .loupe.json and set LOUPE_CONFIG: .loupe.json):
     LOUPE_HARNESS: whip
-    # LOUPE_MODEL: glm-5.3
+    # LOUPE_MODEL: deepseek-v4-pro
     # LOUPE_REASONING: medium
-    # Harness keys ride the credential chain (default provider: env):
-    # ZAI_API_KEY / DEEPSEEK_API_KEY / ANTHROPIC_API_KEY / ...
+    # Model keys ride the credential chain (default provider: env). The default
+    # model (deepseek-flash, built-in whip panel) is covered by a group-level
+    # DEEPSEEK_API_KEY variable; other models need their key (ZAI_API_KEY /
+    # ANTHROPIC_API_KEY / ...) or a whip panel in .loupe.json.

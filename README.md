@@ -59,8 +59,9 @@ highlights, and an optional diagram — not a restatement of the diff.
 
 ```bash
 bun install
-# whip self-authenticates from its own local login — no keys to wire:
-bun run packages/action/src/cli.ts review owner/repo#123 --harness whip
+# default: whip + deepseek-flash through the built-in panel — one key to wire:
+DEEPSEEK_API_KEY=sk-... \
+  bun run packages/action/src/cli.ts review owner/repo#123
 
 # or bring a key for a hosted harness:
 ANTHROPIC_API_KEY=sk-... \
@@ -71,7 +72,7 @@ Token comes from `--token`, else `GITHUB_TOKEN`, else `gh auth token`. GitLab
 works too: `review group/project!N` or a MR URL on any host, with `GITLAB_TOKEN`
 or `glab auth token` — see [docs/gitlab.md](docs/gitlab.md).
 
-Key flags (defaults in parens): `--harness` (whip), `--model` (kimi-k3),
+Key flags (defaults in parens): `--harness` (whip), `--model` (deepseek-flash),
 `--reasoning low|medium|high` (low), `--profile quiet|chill|assertive` (chill),
 `--config <path>` (focused reviewers), `--reviewer <name>` (run just one),
 `--prompt-file <path>` (custom guidance), `--dir` (subdir scope), `--ensemble`
@@ -127,7 +128,10 @@ It can also declare the **whip provider + model panel** under `whip`, so the
 workflow no longer hand-writes `~/.whip/config.json` in a CI step. loupe
 materializes it into a throwaway `WHIP_HOME` at review time (never touching a
 developer's real `~/.whip`); only the API key *value* stays in the workflow —
-its env-var name is in the config.
+its env-var name is in the config. DeepSeek needs no block: loupe ships a
+built-in panel (`deepseek-flash` / `deepseek-v4-pro` via `DEEPSEEK_API_KEY`)
+that applies whenever the model is one of those and the config declares no
+`whip` block of its own — the block below is for wiring a different provider.
 
 ```json
 {

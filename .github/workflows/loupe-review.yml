@@ -1,7 +1,7 @@
 name: "loupe self-review"
 
 # loupe dogfooding loupe: reviews its own PRs with the config in .loupe/config.json
-# (whip, kimi-k3 + panel, maxTurns 5). Advisory and non-blocking — the required
+# (whip, glm-5.3 + panel, maxTurns 2). Advisory and non-blocking — the required
 # check is CI (ci.yml); this never gates a merge. @loupe chat lives in
 # loupe-chat.yml.
 #

@@ -39,7 +39,7 @@ whose globs match a changed file and posts each as its own labeled review
 | `profile` | no | Noise profile: `quiet` (blockers) \| `chill` (default) \| `assertive` (all). |
 | `verify` | no | `false` to skip the verification pass (default on). |
 | `pathInstructions` | no | `[{ glob, instruction }]` extra review instructions for matching files. |
-| `ensemble` | no | `["kimi-k3","glm-5.2-fast"]` — run several models, keep findings a majority agree on. |
+| `ensemble` | no | `["deepseek-flash","deepseek-v4-pro"]` — run several models, keep findings a majority agree on. |
 | `skills` | no | Paths to skill docs (a `SKILL.md` or a skill dir) folded into the reviewer, e.g. `[".agents/skills/i-have-adhd"]` to enforce a terse output style. |
 
 Globs are matched with `Bun.Glob` against repo-relative paths. `include` also

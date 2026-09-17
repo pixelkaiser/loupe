@@ -10,8 +10,9 @@ permissions:
   pull-requests: write # required to post the inline review
 
 jobs:
-  # --- Variant A: internal (whip + inference.net) ---------------------------
-  # whip self-authenticates from its own login; nothing to wire but the login.
+  # --- Variant A: DeepSeek (whip + built-in panel) ---------------------------
+  # The default model (deepseek-flash) rides loupe's built-in whip panel; the
+  # only wiring is the API key.
   review-whip:
     runs-on: ubuntu-latest
     steps:
@@ -19,9 +20,11 @@ jobs:
       - uses: context-labs/loupe@v0
         with:
           harness: whip
-          model: kimi-k3
+          model: deepseek-flash
           reasoning: medium
           dir: inference # scope a monorepo to one folder (optional)
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
 
   # --- Variant B: external (claude + API key secret) ------------------------
   review-claude:
