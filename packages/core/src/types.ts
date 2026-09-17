@@ -38,11 +38,29 @@ const severitySchema = z
  * `line` is the line number in the file as it exists after the PR (RIGHT side
  * of the diff) — GitHub only accepts inline comments on lines in the diff.
  */
+/**
+ * Optional replacement code for the finding's anchored line(s). Models wrap
+ * code in fences even when told not to, so strip any surrounding fence here —
+ * every consumer (inline render, dry-run) gets bare code and adds its own.
+ */
+const suggestionSchema = z
+  .string()
+  .optional()
+  .transform((s) => {
+    if (!s?.trim()) return undefined;
+    const stripped = s
+      .replace(/^\s*```[^\n]*\n?/, "")
+      .replace(/\n?```\s*$/, "")
+      .trim();
+    return stripped || undefined;
+  });
+
 export const findingSchema = z.object({
   path: z.string(),
   line: z.coerce.number().int().positive(),
   severity: severitySchema,
   body: z.string(),
+  suggestion: suggestionSchema,
 });
 export type Finding = z.infer<typeof findingSchema>;
 

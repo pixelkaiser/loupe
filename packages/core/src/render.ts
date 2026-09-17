@@ -65,6 +65,20 @@ export function statLine(
   return bits.join(" · ");
 }
 
+/**
+ * The body of one inline finding comment — identical Markdown on every forge:
+ * severity line, finding body, and, when the finding carries replacement code,
+ * a fenced block the forge renders as a one-click-apply suggestion (GitHub
+ * review comments and GitLab positioned discussions both recognize the
+ * "suggestion" fence language).
+ */
+export function inlineFindingBody(f: Finding, tag: string): string {
+  const suggestion = f.suggestion
+    ? `\n\n\`\`\`suggestion\n${f.suggestion}\n\`\`\``
+    : "";
+  return `${SEV_EMOJI[f.severity]} **${f.severity}** ${f.body}${suggestion}\n\n${tag}`;
+}
+
 /** Assemble the rich Markdown review body from the structured review output. */
 export function renderReviewBody(
   title: string,
@@ -103,10 +117,14 @@ export function renderReviewBody(
   if (dropped.length > 0) {
     parts.push(
       `<details><summary>Other notes (${dropped.length})</summary>\n\n${dropped
-        .map(
-          (f) =>
-            `- ${SEV_EMOJI[f.severity]} \`${f.path}:${f.line}\` — ${f.body.replace(/\n/g, " ")}`,
-        )
+        .map((f) => {
+          const head = `- ${SEV_EMOJI[f.severity]} \`${f.path}:${f.line}\` — ${f.body.replace(/\n/g, " ")}`;
+          // Off-diff: a suggestion fence would be inert outside a positioned
+          // note, so show the code as a plain indented fence instead.
+          return f.suggestion
+            ? `${head}\n  ${["```", ...f.suggestion.split("\n"), "```"].join("\n  ")}`
+            : head;
+        })
         .join("\n")}\n\n</details>`,
     );
   }

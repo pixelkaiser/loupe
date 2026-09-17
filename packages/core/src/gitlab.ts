@@ -2,11 +2,11 @@ import type { Logger } from "@loupe/logger";
 
 import type { Conventions, Forge, PostReviewOptions } from "./forge";
 import {
+  inlineFindingBody,
   makeMarker,
   makeSummaryMarker,
   markerPrefix,
   renderReviewBody,
-  SEV_EMOJI,
   shaFromMarker,
   statLine,
   summaryMarkerPrefix,
@@ -272,7 +272,7 @@ export function makeGitlabForge(
 
     if (refs) {
       for (const f of inline) {
-        const body = `${SEV_EMOJI[f.severity]} **${f.severity}** ${f.body}\n\n${tag}`;
+        const body = inlineFindingBody(f, tag);
         const position = {
           base_sha: refs.base_sha,
           start_sha: refs.start_sha,

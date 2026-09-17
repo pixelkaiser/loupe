@@ -438,6 +438,48 @@ describe("gitlab forge · postReview", () => {
     expect(body).toContain("Other notes (1)");
     expect(body).toContain("src/a.ts:3");
   });
+
+  it("posts a finding's suggestion as an applyable suggestion block", async () => {
+    const { api, calls } = forge([
+      userRoute,
+      notesListRoute([]),
+      mrRoute,
+      { method: "POST", path: "/merge_requests/42/discussions", json: {} },
+      {
+        method: "POST",
+        path: "/merge_requests/42/notes",
+        when: (u) => !u.includes("/notes/"),
+        json: {},
+      },
+    ]);
+
+    await api.postReview(
+      REF,
+      { summary: "s", findings: [], concerns: [], highlights: [] },
+      [
+        {
+          path: "src/a.ts",
+          line: 3,
+          severity: "warning",
+          body: "swallows the error",
+          suggestion: 'except Exception:\n    raise RuntimeError("boom")',
+        },
+      ],
+      [],
+      { reviewerName: "bugs", headSha: "head1111", fileCount: 1 },
+    );
+
+    const discussion = calls.find((c) => c.url.includes("/discussions"));
+    const body = String(
+      (discussion?.body as { body?: string } | undefined)?.body ?? "",
+    );
+    expect(body).toContain("swallows the error");
+    expect(body).toContain(
+      '```suggestion\nexcept Exception:\n    raise RuntimeError("boom")\n```',
+    );
+    // the dedup marker still trails the block
+    expect(body).toContain("<!-- loupe:bugs sha=head1111 -->");
+  });
 });
 
 describe("gitlab forge · misc", () => {

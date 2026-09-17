@@ -51,7 +51,9 @@ forge-shaped hangs off `forge.ts` adapters, and the entry layer picks which one.
 ### core files
 
 - `types.ts` — `Finding` / severity Zod schema (with alias normalization) and
-  the loose review-output schema.
+  the loose review-output schema. Findings may carry an optional `suggestion`
+  (replacement code for the anchored line); the schema strips model-added code
+  fences so every consumer gets bare code.
 - `diff.ts` — `commentableLines` parses hunk headers to the RIGHT-side line set
   the forges accept comments on; `renderDiff` formats the diff for the prompt.
 - `prompt.ts` — default guidance, the three system-prompt layers, user prompt.
@@ -63,8 +65,9 @@ forge-shaped hangs off `forge.ts` adapters, and the entry layer picks which one.
   functions the GitHub-only chat path uses directly.
 - `gitlab.ts` — GitLab adapter (v4 REST via plain fetch, base URL injected so
   self-hosted works and core stays env-free): `makeGitlabForge`.
-- `render.ts` — forge-neutral review-body rendering + the dedup markers
-  (`<!-- loupe:<name> sha=… -->`), shared by both adapters.
+- `render.ts` — forge-neutral review-body rendering (including the inline
+  comment body with its optional applyable suggestion block) + the dedup
+  markers (`<!-- loupe:<name> sha=… -->`), shared by both adapters.
 
 ## Harness abstraction
 

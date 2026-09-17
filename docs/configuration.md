@@ -142,6 +142,10 @@ risks, bugs — rather than restating the diff (no file-by-file walkthrough).
 - **Inline comments** — one per `finding`, on the exact diff line. If the model's
   line is a few off (common in agentic mode), loupe **snaps it to the nearest
   commentable line** rather than demoting it to a note, so findings land inline.
+  A finding whose fix is concrete, self-contained replacement code may carry a
+  **suggestion** — posted inside the inline comment as an applyable suggestion
+  block (one-click "Apply suggestion" on GitHub and GitLab). Off-diff notes
+  show suggestions as a plain code fence instead.
 
 ## Severities
 

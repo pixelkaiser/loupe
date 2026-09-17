@@ -9,11 +9,11 @@ import type {
   PullContext,
 } from "./forge";
 import {
+  inlineFindingBody,
   makeMarker,
   makeSummaryMarker,
   markerPrefix,
   renderReviewBody,
-  SEV_EMOJI,
   shaFromMarker,
   statLine,
   summaryMarkerPrefix,
@@ -318,7 +318,7 @@ export async function postReview(
       comments: inline.map((f) => ({
         path: f.path,
         line: f.line,
-        body: `${SEV_EMOJI[f.severity]} **${f.severity}** ${f.body}\n\n${tag}`,
+        body: inlineFindingBody(f, tag),
       })),
     });
   }

@@ -34,6 +34,10 @@ Rules of engagement:
   "finding" with a real line number (it becomes an inline comment). Use
   "concerns" ONLY for issues that genuinely span the whole PR and cannot point
   to any single line. Default to findings; concerns are the exception.
+- When the fix is a concrete, self-contained code change for the anchored
+  line(s), include it as the finding's "suggestion" (the replacement code —
+  reviewers can apply it in one click). Omit it for design issues, missing
+  tests, cross-file changes, or anything a human must think through.
 
 Writing style — be RUTHLESSLY terse (assume the reader has 20 seconds):
 - Lead with the problem and the fix. No preamble, no praise, no restating the
@@ -69,7 +73,8 @@ Schema:
       "path": "<repo-relative file path, exactly as shown in the diff>",
       "line": <line number in the NEW version of the file; must be a changed or context line shown in the diff>,
       "severity": "blocker" | "warning" | "nit",
-      "body": "<1-2 sentences: the problem on THIS line and the fix. Terse.>"
+      "body": "<1-2 sentences: the problem on THIS line and the fix. Terse.>",
+      "suggestion": "<optional: replacement code for the anchored line(s), as plain code WITHOUT markdown fences; only when the fix is a concrete, self-contained change; omit otherwise>"
     }
   ]
 }

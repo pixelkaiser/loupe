@@ -92,6 +92,37 @@ describe("GitHub review publishing", () => {
     );
   });
 
+  it("posts a finding's suggestion as an applyable suggestion block", async () => {
+    api = octokit();
+    await postReview(
+      api as never,
+      ref,
+      output,
+      [
+        {
+          path: "src/a.ts",
+          line: 2,
+          severity: "warning",
+          body: "missing await",
+          suggestion: "await load(id)",
+        },
+      ],
+      [],
+      logger,
+      { reviewerName: "code", headSha: "a".repeat(40), fileCount: 1 },
+    );
+
+    expect(api.pulls.createReview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        comments: [
+          expect.objectContaining({
+            body: expect.stringContaining("```suggestion\nawait load(id)\n```"),
+          }),
+        ],
+      }),
+    );
+  });
+
   it("updates the matching reviewer's summary in place", async () => {
     api = octokit({
       issueComments: [

@@ -175,7 +175,13 @@ export function renderReview(result: ReviewResult): string {
   const lines = [`\nSummary: ${result.summary}\n`];
   for (const f of [...result.inline, ...result.dropped]) {
     lines.push(`${SEVERITY_MARK[f.severity] ?? "•"} ${f.path}:${f.line}`);
-    lines.push(`   ${f.body}\n`);
+    lines.push(`   ${f.body}`);
+    if (f.suggestion) {
+      lines.push(
+        `   ${["```suggestion", ...f.suggestion.split("\n"), "```"].join("\n   ")}`,
+      );
+    }
+    lines.push("");
   }
   return lines.join("\n");
 }

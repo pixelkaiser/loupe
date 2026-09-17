@@ -73,6 +73,27 @@ describe("parseReviewOutput", () => {
       "warning",
     ]);
   });
+
+  it("keeps suggestions but strips model-added code fences", () => {
+    const out = parseReviewOutput(
+      JSON.stringify({
+        summary: "s",
+        findings: [
+          {
+            path: "a.ts",
+            line: 4,
+            body: "x",
+            suggestion: "```python\nraise ValueError('no')\n```",
+          },
+          { path: "b.ts", line: 5, body: "y", suggestion: "await go()" },
+          { path: "c.ts", line: 6, body: "z", suggestion: "   \n" },
+        ],
+      }),
+    );
+    expect(out.findings[0]?.suggestion).toBe("raise ValueError('no')");
+    expect(out.findings[1]?.suggestion).toBe("await go()");
+    expect(out.findings[2]?.suggestion).toBeUndefined();
+  });
 });
 
 describe("parseReviewOutput concerns/diagram", () => {

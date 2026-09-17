@@ -34,7 +34,7 @@ Legend — **Verified by** values:
 | [docs/github-action.md](github-action.md) | users | workflow wiring, `@loupe` chat commands, inputs and env vars | [action.yml](../action.yml) | 2026-09-17 |
 | [docs/gitlab.md](gitlab.md) | users | GitLab/self-hosted setup: token, CI job, registry image, CLI refs, GitHub differences | [examples/gitlab-ci.yml](../examples/gitlab-ci.yml) · [packages/core/tests/gitlab.test.ts](../packages/core/tests/gitlab.test.ts) · [Dockerfile](../Dockerfile) · [.gitlab-ci.yml](../.gitlab-ci.yml) | 2026-09-17 |
 | [docs/releases.md](releases.md) | users | version pinning (`@v0` vs tag vs SHA), release process | [.github/workflows/release.yml](../.github/workflows/release.yml) | 2026-09-01 |
-| [docs/architecture.md](architecture.md) | maintainers | package layering, review pipeline, key files, extending, tests | `task check` · verify-knowledge (links) | 2026-09-01 |
+| [docs/architecture.md](architecture.md) | maintainers | package layering, review pipeline, key files, extending, tests | `task check` · verify-knowledge (links) | 2026-09-17 |
 | docs/knowledge-map.md | agents | this page | verify-knowledge | 2026-09-01 |
 <!-- verifier: catalogue-end -->
 
@@ -71,7 +71,9 @@ be indexed here.
 
 **Active**
 
-_none_
+| Plan | What it does |
+| --- | --- |
+| [docs/plans/active/0003-finding-suggestions.md](plans/active/0003-finding-suggestions.md) | applyable suggestion blocks on inline findings (schema field + prompt + shared render) |
 
 **Completed**
 
