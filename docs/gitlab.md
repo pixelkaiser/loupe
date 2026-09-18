@@ -14,7 +14,10 @@ line-anchored comments. Two entry points:
 A **project access token** (or personal access token) with the `api` scope,
 passed as `GITLAB_TOKEN`:
 
-- **CI**: add it as a masked, protected CI/CD variable named `GITLAB_TOKEN`.
+- **CI**: add it as a masked CI/CD variable named `GITLAB_TOKEN` — **not
+  protected**: protected variables are only injected on protected branches and
+  tags, and the `loupe-review` job runs on `merge_request_event` pipelines,
+  which never receive them (loupe fails fast with `GITLAB_TOKEN: Required`).
 - **CLI**: resolved in order `--token` → `GITLAB_TOKEN` → `glab auth token`
   (glab picks the right host from the MR URL or `GITLAB_HOST`).
 

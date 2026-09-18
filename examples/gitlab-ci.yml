@@ -5,7 +5,8 @@
 # Setup:
 #   1. Create a project access token with the `api` scope (Maintainer role)
 #      in the repo being reviewed, and add it as a masked CI/CD variable
-#      named GITLAB_TOKEN.
+#      named GITLAB_TOKEN. Do NOT mark it protected — protected variables
+#      never reach merge-request pipelines, which is all this job runs on.
 #   2. Point `image:` at a loupe image. The one below is built by this
 #      repo's own CI (.gitlab-ci.yml pushes it to the project registry) and
 #      bundles bun 1.3.14, git, and the whip harness. Same-instance jobs can
