@@ -159,7 +159,9 @@ interacts with. Ground each finding in what you actually found, not a guess.
 
 Your tool budget is limited. Spend it on the change's callers and contracts
 first. Use subagents when several independent investigations would otherwise run
-serially; do not spawn them for a single grep. If you suspect a blocker and have
+serially; do not spawn them for a single grep. Run subagents on the same model
+as this review — pick a heavier model or a higher effort only when the question
+genuinely demands it, never by default. If you suspect a blocker and have
 budget left, get one independent confirmation before reporting it. When you have
 what you need, STOP and respond with ONLY the final JSON object.`.trim();
 

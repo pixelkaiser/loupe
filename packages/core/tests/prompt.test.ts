@@ -49,6 +49,17 @@ describe("buildSystemPrompt", () => {
     // output contract: the field is part of the findings schema, as plain code
     expect(p).toMatch(/"suggestion".*WITHOUT markdown fences/s);
   });
+
+  it("keeps reviewer subagents on the review model", () => {
+    const p = buildSystemPrompt({ reasoning: "medium", agentic: true });
+    expect(p).toMatch(
+      /Run subagents on the same model\s+as this review — pick a heavier model/,
+    );
+    // headless reviews have no tools, so the directive stays agentic-only
+    expect(buildSystemPrompt({ reasoning: "medium" })).not.toContain(
+      "Run subagents",
+    );
+  });
 });
 
 describe("buildUserPrompt scope notes", () => {
