@@ -1,5 +1,6 @@
 import type { DiffFile } from "./diff";
-import type { Finding, ReviewOutput } from "./types";
+import type { PriorComments, ReviewDiagnostics } from "./render";
+import type { Finding, Note, ReviewOutput } from "./types";
 
 /**
  * A forge is where the code lives and reviews land (GitHub, GitLab, …). The
@@ -25,28 +26,44 @@ export type Forge<R> = {
   fetchConventions(ref: R, paths: readonly string[]): Promise<Conventions>;
   /**
    * The head SHA this reviewer last reviewed, read from the sha stamped in
-   * its most recent review's marker. Undefined if it never reviewed.
+   * its most recent summary/review marker. `unknown: true` means the history
+   * lookup itself failed (full review, prior comments left alone).
    */
-  getLastReviewedSha(
+  getLastReviewed(
     ref: R,
     reviewerName: string | undefined,
-  ): Promise<string | undefined>;
+  ): Promise<LastReviewed>;
   /** Files changed between two commits (the incremental-review delta). */
   changedFilesBetween(ref: R, base: string, head: string): Promise<Set<string>>;
+  /**
+   * Resolve or delete prior inline threads stranded by a rename or deletion
+   * (anchored at a path that no longer exists at head). Best-effort.
+   */
+  cleanupStrandedThreads(
+    ref: R,
+    headPaths: ReadonlySet<string>,
+    options?: { reviewerName?: string; priorComments?: PriorComments },
+  ): Promise<void>;
   /** Post a top-level PR/MR comment (used for chat replies). */
   postIssueComment(ref: R, body: string): Promise<void>;
   /**
+   * Create or update the single combined summary comment that aggregates all
+   * reviewers (supersedes the per-reviewer persistent summaries).
+   */
+  upsertCombinedSummary(ref: R, body: string): Promise<void>;
+  /**
    * Post one review with inline comments. First clears this reviewer's
    * comments from the previous run so re-reviews replace rather than
-   * accumulate.
+   * accumulate. Returns the summary body it published (or would have, when
+   * `deferSummary` set it aside for a combined summary).
    */
   postReview(
     ref: R,
     review: ReviewOutput,
     inline: readonly Finding[],
-    dropped: readonly Finding[],
+    dropped: readonly Note[],
     opts: PostReviewOptions,
-  ): Promise<void>;
+  ): Promise<string | undefined>;
 };
 
 export type PullContext = {
@@ -55,7 +72,18 @@ export type PullContext = {
   readonly files: readonly DiffFile[];
   /** The PR/MR head commit SHA (what this review is of). */
   readonly headSha: string;
+  /** Every file path that exists at head (the full PR/MR file list). */
+  readonly headPaths: ReadonlySet<string>;
 };
+
+/**
+ * The outcome of the last-reviewed history lookup: either a known state
+ * (with the SHA when this reviewer reviewed before) or `unknown` when the
+ * lookup itself failed.
+ */
+export type LastReviewed =
+  | { readonly unknown: false; readonly sha?: string }
+  | { readonly unknown: true; readonly reason: string };
 
 export type Conventions = {
   /** Concatenated doc bodies for the prompt. */
@@ -68,8 +96,23 @@ export type PostReviewOptions = {
   readonly reviewerName?: string;
   /** PR/MR head SHA to stamp in the marker (for incremental review next time). */
   readonly headSha: string;
-  /** Incremental review: only replace prior comments on these files. */
+  /**
+   * Prior-comment cleanup scope: undefined = every marked comment of this
+   * reviewer, empty set = clean up nothing, otherwise only those paths.
+   */
   readonly refreshPaths?: ReadonlySet<string>;
+  /**
+   * Paths that exist at head (the full PR/MR file list). A prior thread
+   * anchored at any other path is stranded — its file was renamed or deleted —
+   * and is swept regardless of scope.
+   */
+  readonly headPaths?: ReadonlySet<string>;
   /** Files in scope, for the stat line. */
   readonly fileCount: number;
+  /** What to do with prior inline comments (default resolve). */
+  readonly priorComments?: PriorComments;
+  /** Run diagnostics for the summary; omitted = not rendered. */
+  readonly diagnostics?: ReviewDiagnostics;
+  /** Let a higher-level orchestrator publish one summary for all reviewers. */
+  readonly deferSummary?: boolean;
 };

@@ -1,17 +1,26 @@
 import type { Logger } from "@loupe/logger";
 
-import type { Conventions, Forge, PostReviewOptions } from "./forge";
+import type {
+  Conventions,
+  Forge,
+  LastReviewed,
+  PostReviewOptions,
+} from "./forge";
 import {
+  COMBINED_SUMMARY_MARKER,
   inlineFindingBody,
+  isDegraded,
   makeMarker,
   makeSummaryMarker,
   markerPrefix,
+  preserveSkippedSummarySections,
   renderReviewBody,
   shaFromMarker,
   statLine,
   summaryMarkerPrefix,
+  type PriorComments,
 } from "./render";
-import type { Finding, ReviewOutput } from "./types";
+import type { Finding, Note, ReviewOutput } from "./types";
 
 /**
  * The GitLab forge: v4 REST with plain fetch, no SDK. The base URL comes from
@@ -46,7 +55,36 @@ type MrNote = {
   readonly body: string;
   readonly author?: { readonly username?: string } | null;
   readonly position?: { readonly new_path?: string } | null;
+  /** Diff-note threads are resolvable; plain notes are not. */
+  readonly resolvable?: boolean;
 };
+type MrDiscussion = {
+  readonly id: string;
+  readonly notes: readonly MrNote[];
+};
+
+/** Prior loupe output selected for cleanup, captured before posting. */
+type PriorSnapshot = {
+  readonly noteIds: readonly number[];
+  readonly discussionIds: readonly string[];
+};
+
+const EMPTY_SNAPSHOT: PriorSnapshot = { noteIds: [], discussionIds: [] };
+
+/**
+ * The cleanup scope for prior-comment snapshotting: `undefined` = every marked
+ * note of this reviewer, otherwise only those paths — plus, always, any path
+ * that no longer exists at head (stranded threads).
+ */
+function scopeFor(
+  refreshPaths: ReadonlySet<string> | undefined,
+  headPaths: ReadonlySet<string> | undefined,
+): ((path: string) => boolean) | undefined {
+  if (!refreshPaths) return undefined;
+  if (refreshPaths.size === 0) return () => false;
+  if (!headPaths) return (path) => refreshPaths.has(path);
+  return (path) => refreshPaths.has(path) || !headPaths.has(path);
+}
 
 class GitlabApiError extends Error {
   constructor(
@@ -99,6 +137,24 @@ export function makeGitlabForge(
     );
   }
 
+  async function listDiscussions(
+    ref: MergeRequestRef,
+  ): Promise<MrDiscussion[]> {
+    const out: MrDiscussion[] = [];
+    let page = 1;
+    for (;;) {
+      const res = await api(
+        `/projects/${pid(ref)}/merge_requests/${ref.mrIid}/discussions` +
+          `?order_by=created_at&sort=desc&page=${page}&per_page=100`,
+      );
+      out.push(...((await res.json()) as MrDiscussion[]));
+      const next = Number(res.headers.get("x-next-page") ?? "");
+      if (!Number.isInteger(next) || next <= page) break;
+      page = next;
+    }
+    return out;
+  }
+
   async function listNotes(ref: MergeRequestRef): Promise<MrNote[]> {
     const out: MrNote[] = [];
     let page = 1;
@@ -149,6 +205,7 @@ export function makeGitlabForge(
           patch: c.diff ?? undefined,
         })),
         headSha: mr.diff_refs?.head_sha ?? mr.sha,
+        headPaths: new Set(rows.map((c) => c.new_path)),
       };
     },
 
@@ -172,7 +229,7 @@ export function makeGitlabForge(
       return { text: parts.join("\n\n---\n\n"), found } satisfies Conventions;
     },
 
-    getLastReviewedSha: async (ref, reviewerName) => {
+    getLastReviewed: async (ref, reviewerName): Promise<LastReviewed> => {
       try {
         const self = await getSelfUsername();
         for (const note of await listNotes(ref)) {
@@ -180,12 +237,15 @@ export function makeGitlabForge(
           const sha =
             shaFromMarker(note.body, summaryMarkerPrefix(reviewerName)) ??
             shaFromMarker(note.body, markerPrefix(reviewerName));
-          if (sha) return sha;
+          if (sha) return { unknown: false, sha };
         }
-      } catch {
-        // treat as no prior review
+      } catch (err) {
+        return {
+          unknown: true,
+          reason: err instanceof Error ? err.message : String(err),
+        };
       }
-      return undefined;
+      return { unknown: false };
     },
 
     changedFilesBetween: async (ref, base, head) => {
@@ -196,6 +256,18 @@ export function makeGitlabForge(
       return new Set((data.diffs ?? []).map((d) => d.new_path));
     },
 
+    cleanupStrandedThreads: async (ref, headPaths, options) => {
+      const policy = options?.priorComments ?? "resolve";
+      if (policy === "keep") return;
+      const snapshot = await snapshotPriorNotes(
+        ref,
+        options?.reviewerName,
+        policy,
+        (path) => !headPaths.has(path),
+      );
+      await cleanupPriorNotes(ref, snapshot, policy);
+    },
+
     postIssueComment: async (ref, body) => {
       await api(`/projects/${pid(ref)}/merge_requests/${ref.mrIid}/notes`, {
         method: "POST",
@@ -203,50 +275,134 @@ export function makeGitlabForge(
       });
     },
 
+    upsertCombinedSummary: async (ref, body) => {
+      await upsertCombinedNote(ref, body);
+    },
+
     postReview: async (ref, review, inline, dropped, postOpts) => {
-      await deletePriorNotes(ref, postOpts);
-      await postNotes(ref, review, inline, dropped, postOpts);
+      // Snapshot first, post second, clean up last: a failed post must never
+      // leave the MR with its old comments gone and no replacement. An empty
+      // refresh set means "clean up nothing" (unknown history) — skip the
+      // lookup entirely. Fail-open like GitHub: a failed lookup keeps priors.
+      const policy = postOpts.priorComments ?? "resolve";
+      const prior =
+        policy === "keep" || postOpts.refreshPaths?.size === 0
+          ? EMPTY_SNAPSHOT
+          : await snapshotPriorNotes(
+              ref,
+              postOpts.reviewerName,
+              policy,
+              scopeFor(postOpts.refreshPaths, postOpts.headPaths),
+            );
+      const summaryBody = await postNotes(
+        ref,
+        review,
+        inline,
+        dropped,
+        postOpts,
+      );
+      await cleanupPriorNotes(ref, prior, policy);
+      return summaryBody;
     },
   };
 
   /**
-   * Delete this forge's inline diff notes from a previous run so re-reviews
-   * replace rather than duplicate — plus legacy marker-tagged summary notes.
-   * Only notes posted under loupe's own user qualify; a human note that quotes
-   * the marker is left alone. The persistent summary (summary-marker tag) is
-   * NOT deleted — postNotes updates it in place. When `refreshPaths` is set
-   * (incremental), inline notes on untouched files are kept. Best-effort:
-   * never blocks posting.
+   * Snapshot this reviewer's prior inline diff notes, in cleanup scope,
+   * captured before the new review posts. Resolve policy records resolvable
+   * discussion ids; delete policy records note ids. Only notes posted under
+   * loupe's own user qualify; a human note quoting the marker is left alone.
+   * Fail-open: a failed lookup keeps everything in place.
    */
-  async function deletePriorNotes(
+  async function snapshotPriorNotes(
     ref: MergeRequestRef,
-    opts: PostReviewOptions,
-  ): Promise<void> {
-    const prefix = markerPrefix(opts.reviewerName);
+    reviewerName: string | undefined,
+    policy: PriorComments,
+    scope?: (path: string) => boolean,
+  ): Promise<PriorSnapshot> {
+    const prefix = markerPrefix(reviewerName);
     try {
       const self = await getSelfUsername();
-      const mine = (await listNotes(ref)).filter(
-        (n) =>
-          (!self || n.author?.username === self) &&
-          n.body.includes(prefix) &&
-          (n.position == null ||
-            !opts.refreshPaths ||
-            opts.refreshPaths.has(n.position.new_path ?? "")),
-      );
-      for (const n of mine) {
-        await api(
-          `/projects/${pid(ref)}/merge_requests/${ref.mrIid}/notes/${n.id}`,
-          { method: "DELETE" },
+      // Delete policy sweeps note ids from the notes list; resolve policy needs
+      // discussion ids, which only the discussions endpoint carries.
+      if (policy === "delete") {
+        const mine = (await listNotes(ref)).filter(
+          (n) =>
+            (!self || n.author?.username === self) &&
+            n.body.includes(prefix) &&
+            (n.position == null ||
+              !scope ||
+              (n.position.new_path && scope(n.position.new_path))),
         );
+        return { noteIds: mine.map((n) => n.id), discussionIds: [] };
       }
-      if (mine.length > 0) {
-        logger.debug("Removed prior loupe notes", { count: mine.length });
+      const discussionIds = new Set<string>();
+      for (const d of await listDiscussions(ref)) {
+        for (const n of d.notes) {
+          if (self && n.author?.username !== self) continue;
+          if (!n.body.includes(prefix)) continue;
+          if (scope && n.position?.new_path && !scope(n.position.new_path)) {
+            continue;
+          }
+          // Diff notes live in resolvable discussions (sweep by resolving);
+          // anything else cannot be resolved and is left to a delete sweep.
+          if (n.position != null && n.resolvable !== false) {
+            discussionIds.add(d.id);
+          }
+        }
       }
+      return { noteIds: [], discussionIds: [...discussionIds] };
     } catch (err) {
-      logger.warn("Could not clean up prior loupe notes", {
-        error: err instanceof Error ? err.message : String(err),
-      });
+      logger.warn(
+        "Could not look up prior loupe notes; leaving them in place",
+        {
+          error: err instanceof Error ? err.message : String(err),
+        },
+      );
+      return EMPTY_SNAPSHOT;
     }
+  }
+
+  /**
+   * Apply the cleanup policy to a snapshot taken before posting. Each
+   * resolution or deletion fails independently; a failure never blocks the
+   * others and never touches anything outside the snapshot.
+   */
+  async function cleanupPriorNotes(
+    ref: MergeRequestRef,
+    snapshot: PriorSnapshot,
+    policy: PriorComments,
+  ): Promise<void> {
+    if (policy === "resolve") {
+      for (const id of snapshot.discussionIds) {
+        try {
+          await api(
+            `/projects/${pid(ref)}/merge_requests/${ref.mrIid}/discussions/${id}`,
+            { method: "PUT", body: JSON.stringify({ resolved: true }) },
+          );
+        } catch (err) {
+          logger.warn("Could not resolve a prior loupe discussion", {
+            discussion: id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    } else {
+      for (const id of snapshot.noteIds) {
+        try {
+          await api(
+            `/projects/${pid(ref)}/merge_requests/${ref.mrIid}/notes/${id}`,
+            { method: "DELETE" },
+          );
+        } catch (err) {
+          logger.warn("Could not delete a prior loupe note", {
+            note: id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    }
+    const n = snapshot.noteIds.length + snapshot.discussionIds.length;
+    if (n > 0) logger.debug("Cleaned up prior loupe notes", { count: n });
   }
 
   /**
@@ -261,9 +417,9 @@ export function makeGitlabForge(
     ref: MergeRequestRef,
     review: ReviewOutput,
     inline: readonly Finding[],
-    dropped: readonly Finding[],
+    dropped: readonly Note[],
     opts: PostReviewOptions,
-  ): Promise<void> {
+  ): Promise<string> {
     const mr = await getMr(ref);
     const refs = mr.diff_refs;
     const tag = makeMarker(opts.reviewerName, opts.headSha);
@@ -319,7 +475,8 @@ export function makeGitlabForge(
       : "loupe review";
     const summaryTag = makeSummaryMarker(opts.reviewerName, opts.headSha);
     const lastReviewed = `Last reviewed commit: [\`${opts.headSha.slice(0, 7)}\`](${root}/${ref.project}/-/commit/${opts.headSha})`;
-    const stats = statLine(inline, review, opts.fileCount);
+    const degraded = opts.diagnostics ? isDegraded(opts.diagnostics) : false;
+    const stats = statLine(inline, review, opts.fileCount, degraded);
     const verdict = hasBlocker ? "⚠️ request changes" : "💬 comment";
     const body = `**Verdict:** ${verdict}\n\n${renderReviewBody(
       title,
@@ -327,8 +484,13 @@ export function makeGitlabForge(
       review,
       posted,
       [...dropped, ...demoted],
+      opts.diagnostics,
       `${lastReviewed}\n\n${summaryTag}`,
     )}`;
+
+    // Deferred: the orchestrator publishes one combined summary for every
+    // reviewer; this run only posts the inline notes and hands the body back.
+    if (opts.deferSummary) return body;
 
     // Create or update this reviewer's persistent summary note (updated in
     // place so the MR thread list doesn't grow on every re-review).
@@ -336,7 +498,9 @@ export function makeGitlabForge(
     const prior = (await listNotes(ref)).find(
       (n) =>
         (!self || n.author?.username === self) &&
-        n.body.includes(summaryMarkerPrefix(opts.reviewerName)),
+        n.body.includes(summaryMarkerPrefix(opts.reviewerName)) &&
+        !n.body.includes(COMBINED_SUMMARY_MARKER) &&
+        !n.body.includes("<!-- loupe:summary:stale -->"),
     );
     if (prior) {
       await api(
@@ -348,6 +512,83 @@ export function makeGitlabForge(
         method: "POST",
         body: JSON.stringify({ body }),
       });
+    }
+    return body;
+  }
+
+  /**
+   * Create or update the single summary note that aggregates all reviewers,
+   * superseding the per-reviewer persistent summaries. Skipped reviewers keep
+   * their last real section; reviewers not running at all keep their SHA
+   * markers (incremental state) appended to the note. Legacy per-reviewer
+   * summary notes are tagged stale once the combined note is live.
+   */
+  async function upsertCombinedNote(
+    ref: MergeRequestRef,
+    body: string,
+  ): Promise<void> {
+    const self = await getSelfUsername();
+    const mine = (await listNotes(ref)).filter(
+      (n) => !self || n.author?.username === self,
+    );
+    const prior = mine.find((n) => n.body.includes(COMBINED_SUMMARY_MARKER));
+    const mergedBody = preserveSkippedSummarySections(body, prior?.body);
+    const currentReviewers = new Set(
+      [
+        ...mergedBody.matchAll(
+          /<!-- loupe:summary:([^\s]+) sha=[0-9a-f]{7,40} -->/g,
+        ),
+      ].map((match) => match[1]),
+    );
+    const retainedMarkers = mine
+      .flatMap((n) => [
+        ...(n.body.matchAll(
+          /<!-- loupe:summary:([^\s]+) sha=[0-9a-f]{7,40} -->/g,
+        ) ?? []),
+      ])
+      .filter((match) => match[1] && !currentReviewers.has(match[1]))
+      .map((match) => match[0]);
+    const markedBody = [
+      mergedBody.trim(),
+      ...new Set(retainedMarkers),
+      COMBINED_SUMMARY_MARKER,
+    ].join("\n\n");
+    if (prior) {
+      await api(
+        `/projects/${pid(ref)}/merge_requests/${ref.mrIid}/notes/${prior.id}`,
+        { method: "PUT", body: JSON.stringify({ body: markedBody }) },
+      );
+    } else {
+      await api(`/projects/${pid(ref)}/merge_requests/${ref.mrIid}/notes`, {
+        method: "POST",
+        body: JSON.stringify({ body: markedBody }),
+      });
+    }
+
+    // Preserve legacy per-reviewer notes for history, but tag them stale only
+    // after the replacement exists. Best-effort, never fails the review.
+    for (const n of mine) {
+      if (
+        n.id !== prior?.id &&
+        n.body.includes("<!-- loupe:summary:") &&
+        !n.body.includes(COMBINED_SUMMARY_MARKER) &&
+        !n.body.includes("<!-- loupe:summary:stale -->")
+      ) {
+        try {
+          await api(
+            `/projects/${pid(ref)}/merge_requests/${ref.mrIid}/notes/${n.id}`,
+            {
+              method: "PUT",
+              body: JSON.stringify({
+                body: `${n.body.trim()}\n\n> ℹ️ This legacy reviewer summary is stale. Loupe now publishes a single combined summary.\n\n<!-- loupe:summary:stale -->`,
+              }),
+            },
+          );
+        } catch {
+          // The combined summary is already live; a legacy-tagging failure
+          // must not turn a completed review into a failed one.
+        }
+      }
     }
   }
 }

@@ -58,14 +58,16 @@ LOG_LEVEL=debug bun run packages/action/src/cli.ts review owner/repo#123 --dry-r
 |---|---|---|
 | `-H, --harness <name>` | `whip` | Agent CLI: `whip`, `claude`, `codex`. |
 | `-m, --model <name>` | `deepseek-flash` | Model id passed to the harness. |
-| `-r, --reasoning <level>` | `low` | `low` \| `medium` \| `high`. |
+| `-r, --reasoning <level>` | `low` | `low` \| `medium` \| `high`, passed to the harness natively. |
+| `--prior-comments <policy>` | `resolve` | Prior inline comments on re-review: `resolve` \| `delete` \| `keep`. |
+| `--max-turns <n>` | `10` | Cap on the agentic tool loop. |
 | `--no-agentic` | (agentic on) | Review one-shot from the diff, no tool use. |
 | `--profile <name>` | `chill` | Noise: `quiet` \| `chill` \| `assertive`. |
 | `--no-verify` | (verify on) | Skip the verification pass. |
 | `--timezone <tz>` | `UTC` | Timezone label for the review environment line (e.g. `PST`). |
 | `--ensemble <models>` | — | Run several models; keep findings a majority agree on. |
 | `--full` | off | Whole-PR review instead of the incremental delta. |
-| `-d, --dir <subdir>` | — | Restrict to a subdirectory (e.g. `inference`). |
+| `-d, --dir <dirs>` | — | Restrict to one or more directories, comma-separated (e.g. `inference,elixir_engine`). |
 | `--config <path>` | — | `.loupe.json` reviewer profiles; runs each match. |
 | `--reviewer <name>` | — | Run only one named reviewer from `--config`. |
 | `--prompt-file <path>` | — | Custom reviewer guidance (single-reviewer mode). |

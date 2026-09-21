@@ -1,9 +1,12 @@
 import {
+  anchorLabel,
+  isDegraded,
   makeGithubForge,
   makeGitlabForge,
   runReview,
   type Forge,
   type ForgeBinding,
+  type PriorComments,
   type Profile,
   type ReasoningEffort,
   type ReviewResult,
@@ -12,7 +15,11 @@ import {
   resolveCredentials,
   type CredentialProvider,
 } from "@loupe/credentials";
-import { getHarness, type WhipConfig } from "@loupe/harness";
+import {
+  getHarness,
+  type HarnessTraceEvent,
+  type WhipConfig,
+} from "@loupe/harness";
 import type { Logger } from "@loupe/logger";
 
 import type { ForgeTarget } from "./config";
@@ -23,10 +30,10 @@ export type ReviewRunOptions = {
   readonly workdir: string;
   readonly conventionPaths: readonly string[];
   readonly providers: readonly CredentialProvider[];
-  readonly subdir?: string;
+  readonly dirs?: readonly string[];
   readonly dryRun?: boolean;
   readonly model?: string;
-  readonly reasoning: ReasoningEffort;
+  readonly reasoning?: ReasoningEffort;
   readonly guidance?: string;
   readonly reviewerName?: string;
   readonly include?: readonly string[];
@@ -41,6 +48,11 @@ export type ReviewRunOptions = {
   readonly timezone?: string;
   readonly whipConfig?: WhipConfig;
   readonly maxTurns?: number;
+  readonly priorComments?: PriorComments;
+  readonly procedure?: boolean;
+  readonly deferSummary?: boolean;
+  /** Optional trace sink forwarded to every harness call this review makes. */
+  readonly trace?: (event: HarnessTraceEvent) => void;
   readonly logger: Logger;
 };
 
@@ -84,7 +96,7 @@ export async function reviewPullRequest<R>(
     harnessEnv,
     whipConfig: input.whipConfig,
     conventionPaths: input.conventionPaths,
-    subdir: input.subdir,
+    dirs: input.dirs,
     dryRun: input.dryRun,
     model: input.model,
     reasoning: input.reasoning,
@@ -101,6 +113,10 @@ export async function reviewPullRequest<R>(
     skills: input.skills,
     timezone: input.timezone,
     maxTurns: input.maxTurns,
+    priorComments: input.priorComments,
+    procedure: input.procedure,
+    deferSummary: input.deferSummary,
+    trace: input.trace,
     logger,
   });
 }
@@ -155,12 +171,16 @@ export function reviewBound(
 }
 
 export function formatResult(result: ReviewResult): string {
+  const d = result.diagnostics;
   return (
     `loupe: ${result.inlineCount} inline comment(s)` +
     (result.droppedCount > 0
       ? `, ${result.droppedCount} off-diff note(s)`
       : "") +
-    (result.requestedChanges ? " — requested changes" : "")
+    (result.requestedChanges ? " — requested changes" : "") +
+    (isDegraded(d)
+      ? ` — degraded (mode=${d.mode}, verify=${d.verify}, scope=${d.incremental}, malformed=${d.malformedDropped.findings + d.malformedDropped.concerns})`
+      : "")
   );
 }
 
@@ -172,9 +192,13 @@ const SEVERITY_MARK: Record<string, string> = {
 
 /** Human-readable rendering of a dry-run review for the terminal. */
 export function renderReview(result: ReviewResult): string {
-  const lines = [`\nSummary: ${result.summary}\n`];
+  const d = result.diagnostics;
+  const lines = [
+    `\nSummary: ${result.summary}\n`,
+    `Run: mode=${d.mode} verify=${d.verify} scope=${d.incremental} malformed=${d.malformedDropped.findings}/${d.malformedDropped.concerns} outOfScope=${d.outOfScopeDropped} profile=${d.profileDropped} verifyDropped=${d.verifyDropped}\n`,
+  ];
   for (const f of [...result.inline, ...result.dropped]) {
-    lines.push(`${SEVERITY_MARK[f.severity] ?? "•"} ${f.path}:${f.line}`);
+    lines.push(`${SEVERITY_MARK[f.severity] ?? "•"} ${anchorLabel(f)}`);
     lines.push(`   ${f.body}`);
     if (f.suggestion) {
       lines.push(

@@ -111,6 +111,10 @@ const notesListRoute = (notes: unknown[]): Route => ({
   when: (u) => !u.includes("/notes/"),
   json: notes,
 });
+const discussionsListRoute = (discussions: unknown[]): Route => ({
+  path: "/merge_requests/42/discussions",
+  json: discussions,
+});
 
 describe("gitlab forge · fetchPullContext", () => {
   it("maps the MR and its changes onto PullContext", async () => {
@@ -171,7 +175,10 @@ describe("gitlab forge · incremental support", () => {
         },
       ]),
     ]);
-    expect(await api.getLastReviewedSha(REF, "bugs")).toBe("abc123def456");
+    expect(await api.getLastReviewed(REF, "bugs")).toEqual({
+      unknown: false,
+      sha: "abc123def456",
+    });
   });
 
   it("falls back to the legacy inline marker when no summary note exists", async () => {
@@ -185,7 +192,10 @@ describe("gitlab forge · incremental support", () => {
         },
       ]),
     ]);
-    expect(await api.getLastReviewedSha(REF, "bugs")).toBe("fff000fff111");
+    expect(await api.getLastReviewed(REF, "bugs")).toEqual({
+      unknown: false,
+      sha: "fff000fff111",
+    });
   });
 
   it("ignores a human note quoting the marker (author guard)", async () => {
@@ -199,7 +209,7 @@ describe("gitlab forge · incremental support", () => {
         },
       ]),
     ]);
-    expect(await api.getLastReviewedSha(REF, "bugs")).toBeUndefined();
+    expect(await api.getLastReviewed(REF, "bugs")).toEqual({ unknown: false });
   });
 
   it("returns undefined when this reviewer never posted", async () => {
@@ -213,7 +223,7 @@ describe("gitlab forge · incremental support", () => {
         },
       ]),
     ]);
-    expect(await api.getLastReviewedSha(REF, "bugs")).toBeUndefined();
+    expect(await api.getLastReviewed(REF, "bugs")).toEqual({ unknown: false });
   });
 
   it("lists changed paths from the compare endpoint", async () => {
@@ -320,6 +330,7 @@ describe("gitlab forge · postReview", () => {
         reviewerName: "bugs",
         headSha: "head1111",
         refreshPaths: new Set(["src/a.ts"]), // incremental: keep src/other.ts
+        priorComments: "delete",
         fileCount: 2,
       },
     );
@@ -333,7 +344,9 @@ describe("gitlab forge · postReview", () => {
     ]);
 
     // inline finding → one positioned discussion
-    const discussion = calls.find((c) => c.url.includes("/discussions"));
+    const discussion = calls.find(
+      (c) => c.method === "POST" && c.url.includes("/discussions"),
+    );
     expect((discussion?.body as Record<string, unknown>)?.body).toEqual(
       expect.stringContaining("off-by-one"),
     );
@@ -361,6 +374,84 @@ describe("gitlab forge · postReview", () => {
       "Last reviewed commit: [`head111`](https://gitlab.example.com/group/proj/-/commit/head1111)",
     );
     expect(body).toContain("No rollback");
+  });
+
+  it("resolves prior in-scope discussions by default (resolve policy)", async () => {
+    const { api, calls } = forge([
+      userRoute,
+      discussionsListRoute([
+        {
+          id: "d1",
+          notes: [
+            {
+              id: 11,
+              author: { username: BOT },
+              body: "old inline\n<!-- loupe:bugs sha=old -->",
+              position: { new_path: "src/a.ts" },
+              resolvable: true,
+            },
+          ],
+        },
+        {
+          id: "d2", // out of scope — untouched file on an incremental run
+          notes: [
+            {
+              id: 12,
+              author: { username: BOT },
+              body: "kept\n<!-- loupe:bugs sha=old -->",
+              position: { new_path: "src/other.ts" },
+              resolvable: true,
+            },
+          ],
+        },
+        {
+          id: "d3", // human quoting loupe — author guard keeps it open
+          notes: [
+            {
+              id: 13,
+              author: { username: "te" },
+              body: "quoting loupe\n<!-- loupe:bugs sha=old -->",
+              position: { new_path: "src/a.ts" },
+              resolvable: true,
+            },
+          ],
+        },
+      ]),
+      notesListRoute([]),
+      mrRoute,
+      { method: "POST", path: "/merge_requests/42/discussions", json: {} },
+      {
+        method: "POST",
+        path: "/merge_requests/42/notes",
+        when: (u) => !u.includes("/notes/"),
+        json: {},
+      },
+    ]);
+
+    await api.postReview(
+      REF,
+      { summary: "s", findings: [], concerns: [], highlights: [] },
+      [],
+      [],
+      {
+        reviewerName: "bugs",
+        headSha: "head1111",
+        refreshPaths: new Set(["src/a.ts"]),
+        fileCount: 1,
+      },
+    );
+
+    const resolve = calls.find(
+      (c) => c.method === "PUT" && c.url.includes("/discussions/d1"),
+    );
+    expect(resolve?.body).toEqual({ resolved: true });
+    expect(calls.some((c) => c.method === "PUT" && c.url.includes("d2"))).toBe(
+      false,
+    );
+    expect(calls.some((c) => c.method === "PUT" && c.url.includes("d3"))).toBe(
+      false,
+    );
+    expect(calls.some((c) => c.method === "DELETE")).toBe(false);
   });
 
   it("updates the persistent summary in place when one exists", async () => {
@@ -400,6 +491,7 @@ describe("gitlab forge · postReview", () => {
     const { api, calls } = forge([
       userRoute,
       notesListRoute([]),
+      discussionsListRoute([]),
       mrRoute,
       {
         method: "POST",
@@ -423,10 +515,12 @@ describe("gitlab forge · postReview", () => {
         [],
         { reviewerName: "bugs", headSha: "head1111", fileCount: 1 },
       ),
-    ).resolves.toBeUndefined();
+    ).resolves.toContain("loupe · bugs");
 
     // one retry, then give up on the position
-    const discussions = calls.filter((c) => c.url.includes("/discussions"));
+    const discussions = calls.filter(
+      (c) => c.method === "POST" && c.url.includes("/discussions"),
+    );
     expect(discussions).toHaveLength(2);
 
     const note = calls.find(
@@ -443,6 +537,7 @@ describe("gitlab forge · postReview", () => {
     const { api, calls } = forge([
       userRoute,
       notesListRoute([]),
+      discussionsListRoute([]),
       mrRoute,
       { method: "POST", path: "/merge_requests/42/discussions", json: {} },
       {
@@ -469,7 +564,9 @@ describe("gitlab forge · postReview", () => {
       { reviewerName: "bugs", headSha: "head1111", fileCount: 1 },
     );
 
-    const discussion = calls.find((c) => c.url.includes("/discussions"));
+    const discussion = calls.find(
+      (c) => c.method === "POST" && c.url.includes("/discussions"),
+    );
     const body = String(
       (discussion?.body as { body?: string } | undefined)?.body ?? "",
     );
@@ -479,6 +576,90 @@ describe("gitlab forge · postReview", () => {
     );
     // the dedup marker still trails the block
     expect(body).toContain("<!-- loupe:bugs sha=head1111 -->");
+  });
+});
+
+describe("gitlab forge · upsertCombinedSummary", () => {
+  it("creates the combined note, then updates it in place", async () => {
+    const created = forge([
+      userRoute,
+      notesListRoute([]),
+      {
+        method: "POST",
+        path: "/merge_requests/42/notes",
+        when: (u) => !u.includes("/notes/"),
+        json: {},
+      },
+    ]);
+    await created.api.upsertCombinedSummary(REF, "# 🔍 Loupe review\n\nbody");
+    const post = created.calls.find(
+      (c) => c.method === "POST" && c.url.endsWith("/notes"),
+    );
+    expect(String((post?.body as { body?: string })?.body)).toContain(
+      "<!-- loupe:summary:combined -->",
+    );
+
+    const updated = forge([
+      userRoute,
+      notesListRoute([
+        {
+          id: 90,
+          author: { username: BOT },
+          body: "prior\n<!-- loupe:summary:combined -->",
+        },
+      ]),
+      { method: "PUT", path: "/merge_requests/42/notes/90", json: {} },
+    ]);
+    await updated.api.upsertCombinedSummary(REF, "# 🔍 Loupe review\n\nbody2");
+    const put = updated.calls.find(
+      (c) => c.method === "PUT" && c.url.includes("/notes/90"),
+    );
+    expect(String((put?.body as { body?: string })?.body ?? "")).toContain(
+      "body2",
+    );
+    expect(
+      updated.calls.some(
+        (c) => c.method === "POST" && c.url.endsWith("/notes"),
+      ),
+    ).toBe(false);
+  });
+
+  it("retains a skipped reviewer's sha marker and tags legacy notes stale", async () => {
+    const { api, calls } = forge([
+      userRoute,
+      notesListRoute([
+        {
+          id: 80,
+          author: { username: BOT },
+          body: "## docs\n\nold section\n\n<!-- loupe:summary:docs sha=abc123def456 -->",
+        },
+      ]),
+      {
+        method: "POST",
+        path: "/merge_requests/42/notes",
+        when: (u) => !u.includes("/notes/"),
+        json: {},
+      },
+    ]);
+
+    await api.upsertCombinedSummary(
+      REF,
+      "# 🔍 Loupe review\n\n<!-- loupe:section:code:start -->\n## code\n\nlive\n<!-- loupe:section:code:end -->",
+    );
+
+    const post = calls.find(
+      (c) => c.method === "POST" && c.url.endsWith("/notes"),
+    );
+    const body = String((post?.body as { body?: string })?.body);
+    // the skipped reviewer's incremental marker survives on the combined note
+    expect(body).toContain("<!-- loupe:summary:docs sha=abc123def456 -->");
+    // the legacy per-reviewer note gets the stale tag
+    const put = calls.find(
+      (c) => c.method === "PUT" && c.url.includes("/notes/80"),
+    );
+    expect(String((put?.body as { body?: string })?.body)).toContain(
+      "<!-- loupe:summary:stale -->",
+    );
   });
 });
 

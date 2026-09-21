@@ -12,6 +12,7 @@
     "tsc": "./node_modules/typescript-7/bin/tsc --build",
     "test": "vitest run",
     "verify:knowledge": "bun scripts/verify-knowledge.ts",
+    "trace:preview": "bun run --cwd packages/action trace:preview",
     "check": "bun format && bun lint && bun tsc && bun test && bun verify:knowledge"
   },
   "dependencies": {
@@ -20,6 +21,7 @@
   },
   "devDependencies": {
     "@types/bun": "1.3.14",
+    "@types/picomatch": "^4.0.3",
     "bun-types": "1.3.14",
     "oxfmt": "0.59.0",
     "oxlint": "1.74.0",

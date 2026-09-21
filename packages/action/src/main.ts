@@ -24,7 +24,8 @@ async function main(): Promise<void> {
     await handleComment(config, logger);
     return;
   }
-  await runReviews(config, logger);
+  const outcomes = await runReviews(config, logger);
+  if (outcomes.some((o) => !o.ok)) process.exitCode = 1;
 }
 
 main()

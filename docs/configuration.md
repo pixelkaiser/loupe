@@ -32,18 +32,36 @@ whose globs match a changed file and posts each as its own labeled review
 | `name` | yes | Label on the posted review; also the comment marker for de-dup. |
 | `prompt` or `promptFile` | one | Reviewer guidance. `promptFile` resolves relative to the config file. |
 | `include` | no | Globs; reviewer runs only when a changed file matches. **Omit = the whole PR.** |
+| `dir` | no | One directory or a list. Overrides the top-level `dir` for this reviewer. |
 | `exclude` | no | Globs removed from scope (lockfiles, generated output, …). |
 | `model` | no | Overrides the run's model for this reviewer. |
-| `reasoning` | no | `low` \| `medium` \| `high`. |
+| `reasoning` | no | `low` \| `medium` \| `high`. Passed to the harness natively (whip `defaultEffort` in the materialized `WHIP_HOME`, `claude --effort`, codex `model_reasoning_effort`) and noted in the prompt. Unset = the harness's own default. whip without a `whip` config block keeps its own default effort; only the prompt note applies. |
 | `agentic` | no | `false` to run one-shot; omitted = agentic (the default). |
 | `profile` | no | Noise profile: `quiet` (blockers) \| `chill` (default) \| `assertive` (all). |
 | `verify` | no | `false` to skip the verification pass (default on). |
 | `pathInstructions` | no | `[{ glob, instruction }]` extra review instructions for matching files. |
 | `ensemble` | no | `["deepseek-flash","deepseek-v4-pro"]` — run several models, keep findings a majority agree on. |
 | `skills` | no | Paths to skill docs (a `SKILL.md` or a skill dir) folded into the reviewer, e.g. `[".agents/skills/i-have-adhd"]` to enforce a terse output style. |
+| `procedure` | no | `false` drops the always-on review procedure (caller check, wrapper rule) from this reviewer's prompt. Also a top-level default. |
+| `priorComments` | no | What happens to this reviewer's earlier inline comments on a re-review: `resolve` (default: resolve the thread, history kept) \| `delete` \| `keep` (leave them, new comments accumulate). Also a top-level default and the `prior-comments` Action input / `--prior-comments` flag. |
 
-Globs are matched with `Bun.Glob` against repo-relative paths. `include` also
-composes with `--dir` (subdir scope).
+Globs are matched against repo-relative paths. `include` composes with `dir`.
+
+### `dir`: one directory or several
+
+Top level or per reviewer, a string or a list:
+
+```jsonc
+{ "dir": "inference" }                         // one directory
+{ "dir": ["inference", "elixir_engine"] }      // two systems reviewed together
+```
+
+Only changed files under a listed directory are in scope, and convention docs
+(`AGENTS.md`, …) are read from each. With one directory the harness runs inside
+it and the prompt explains the path mapping. With several it runs at the repo
+root so the agent reads both sides of a change in one review. The Action input
+and `--dir` flag take a comma-separated list. A single string keeps working as
+before.
 
 Run all matching reviewers, or one:
 
@@ -121,9 +139,22 @@ Two scopes:
   filter.
 - **Path instructions** — per-glob natural-language guidance injected only when
   a matching file changed (e.g. "in `**/*.sql`, flag full-table locks").
-- **Incremental review** — on a re-review, loupe reviews only the files changed
-  since its last review of the PR and replaces only those comments; comments on
-  untouched files are kept. `--full` / `full: true` forces a whole-PR review.
+- **Incremental review** — on a re-review, loupe reassesses only the in-scope
+  files changed since its last review of the PR. The whole in-scope PR diff is
+  still written to disk as context, and the prompt names the files to reassess.
+  Findings anchored on other files are dropped (counted in the run details).
+  Prior comments are cleaned up only on the reassessed files, per
+  `priorComments`. `--full` / `full: true` forces a whole-PR review. If the
+  history lookup or compare fails, loupe does a full review and touches no
+  prior comment.
+- **Run details** — every summary carries a collapsed `Run details` block:
+  the review mode (agentic, headless, or fallback), the verification status, the scope, and
+  how many findings were dropped as malformed, out of scope, below the noise
+  profile, or rejected by verification. The stat line shows `⚠️ degraded run`
+  when the review lost something.
+- **Reviewer failures are visible** — a reviewer that throws posts a
+  `⚠️ loupe · <name> could not complete this review` comment (no marker, no
+  SHA) and the job exits 1; the other reviewers still run.
 
 ## What a review looks like
 

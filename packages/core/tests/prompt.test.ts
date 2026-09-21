@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import { renderFileTree, type DiffFile } from "../src/diff";
-import { buildSystemPrompt, buildUserPrompt } from "../src/prompt";
+import {
+  buildSystemPrompt,
+  buildUserPrompt,
+  buildVerifySystemPrompt,
+} from "../src/prompt";
 
 const files: DiffFile[] = [
   { path: "src/a.ts", patch: "@@ -1,1 +1,2 @@\n line\n+added line\n-removed" },
@@ -44,5 +48,82 @@ describe("buildSystemPrompt", () => {
     expect(p).toContain('"suggestion"');
     // output contract: the field is part of the findings schema, as plain code
     expect(p).toMatch(/"suggestion".*WITHOUT markdown fences/s);
+  });
+});
+
+describe("buildUserPrompt scope notes", () => {
+  const base = {
+    title: "t",
+    description: "",
+    files,
+    diffPath: "/tmp/x/pr.diff",
+  };
+
+  it("explains the cwd/path mapping only when running inside a subdir", () => {
+    expect(buildUserPrompt({ ...base, cwdSubdir: "inference" })).toContain(
+      "Your working directory is `inference/`",
+    );
+    expect(buildUserPrompt(base)).not.toContain("Your working directory");
+  });
+
+  it("lists focus files before the tree on an incremental run", () => {
+    const p = buildUserPrompt({ ...base, focusPaths: ["src/a.ts"] });
+    expect(p.indexOf("Files to reassess")).toBeLessThan(
+      p.indexOf("Changed files"),
+    );
+    expect(p).toContain("- src/a.ts\n");
+    expect(p).toContain("The other listed files are context");
+  });
+});
+
+describe("buildSystemPrompt reasoning", () => {
+  it("omits the reasoning note when no effort is configured", () => {
+    expect(buildSystemPrompt({})).not.toContain("Reasoning effort:");
+    expect(buildSystemPrompt({ reasoning: "high" })).toContain(
+      "Reasoning effort: high",
+    );
+  });
+});
+
+describe("buildVerifySystemPrompt", () => {
+  it("fails open on evidence outside the diff instead of rejecting it", () => {
+    const p = buildVerifySystemPrompt();
+    expect(p).toContain("outside-diff");
+    expect(p).not.toContain("based on code not shown");
+  });
+});
+
+describe("review procedure and call sites", () => {
+  it("appends the procedure even when custom guidance replaces the default, unless disabled", () => {
+    const custom = buildSystemPrompt({ guidance: "Only hunt bugs." });
+    expect(custom).toContain("Only hunt bugs.");
+    expect(custom).toContain("Procedure — do these before writing any finding");
+    expect(
+      buildSystemPrompt({ guidance: "x", procedure: false }),
+    ).not.toContain("Procedure —");
+  });
+
+  it("puts the evidence bar in the default guidance, not the output contract", () => {
+    const def = buildSystemPrompt({});
+    expect(def).toContain("The bar for a finding (precision over recall)");
+    expect(def).toContain("this input / this path → this wrong result");
+    expect(def).toContain("Hedge the claim, not the report.");
+    // A custom prompt replaces the guidance, so the bar goes with it: a docs
+    // reviewer has no runtime failure to name.
+    expect(buildSystemPrompt({ guidance: "Only hunt bugs." })).not.toContain(
+      "The bar for a finding",
+    );
+  });
+
+  it("renders pre-computed call sites in the user message", () => {
+    const p = buildUserPrompt({
+      title: "t",
+      description: "",
+      files,
+      diffPath: "/tmp/x/pr.diff",
+      callSites: "`login`:\n- svc/commands/harness.ts:41  await login();",
+    });
+    expect(p).toContain("Call sites of changed exports");
+    expect(p).toContain("svc/commands/harness.ts:41");
   });
 });

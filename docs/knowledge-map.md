@@ -32,9 +32,11 @@ Legend — **Verified by** values:
 | [docs/configuration.md](configuration.md) | users | `.loupe.json` reviewer fields, prompt layering, agentic mode, skills, signal-to-noise | zod schema in [packages/action/src/reviewers.ts](../packages/action/src/reviewers.ts) · DEBT-003 | 2026-09-17 |
 | [docs/credentials.md](credentials.md) | users | provider chain, per-harness keys, CI secrets | [packages/credentials/src/index.ts](../packages/credentials/src/index.ts) | 2026-09-01 |
 | [docs/github-action.md](github-action.md) | users | workflow wiring, `@loupe` chat commands, inputs and env vars | [action.yml](../action.yml) | 2026-09-17 |
+| [docs/review-traces.md](review-traces.md) | users | review traces (reasoning/tool transcripts) in the Actions step summary, local verification via `trace:preview` | [packages/action/src/trace.ts](../packages/action/src/trace.ts) · [packages/action/tests/trace.test.ts](../packages/action/tests/trace.test.ts) | 2026-09-21 |
 | [docs/gitlab.md](gitlab.md) | users | GitLab/self-hosted setup: token (masked, NOT protected — protected vars never reach MR pipelines), CI job, registry image, CLI refs, GitHub differences | [examples/gitlab-ci.yml](../examples/gitlab-ci.yml) · [packages/core/tests/gitlab.test.ts](../packages/core/tests/gitlab.test.ts) · [Dockerfile](../Dockerfile) · [.gitlab-ci.yml](../.gitlab-ci.yml) | 2026-09-18 |
 | [docs/releases.md](releases.md) | users | version pinning (`@v0` vs tag vs SHA), release process | [.github/workflows/release.yml](../.github/workflows/release.yml) | 2026-09-01 |
 | [docs/architecture.md](architecture.md) | maintainers | package layering, review pipeline, key files, extending, tests | `task check` · verify-knowledge (links) | 2026-09-17 |
+| [docs/how-it-works/README.md](how-it-works/README.md) | all | pipeline walkthrough with Mermaid diagrams: context, first-vs-incremental review, the review run, GitHub objects, chat, triggers | verify-knowledge (links) | 2026-09-21 |
 | docs/knowledge-map.md | agents | this page | verify-knowledge | 2026-09-01 |
 <!-- verifier: catalogue-end -->
 

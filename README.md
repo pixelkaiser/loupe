@@ -11,7 +11,7 @@ GitHub Action, GitLab, and the maintainer architecture reference.
 ## Why loupe
 
 - **One reviewer is a blurry reviewer.** A single mega-prompt that tries to
-  catch bugs *and* migration risk *and* security *and* conventions does none of
+  catch bugs _and_ migration risk _and_ security _and_ conventions does none of
   them well. loupe lets you define **multiple focused reviewers** — each with its
   own prompt, file globs, model, and reasoning effort — so a bug-hunter reads the
   source, a migration-risk reviewer reads the SQL, a security reviewer reads the
@@ -20,7 +20,7 @@ GitHub Action, GitLab, and the maintainer architecture reference.
 - **Any harness, any model — your choice, not the vendor's.** loupe drives the
   agent CLI you already use — [whip](https://github.com/context-labs/whip),
   Claude, Codex — as a subprocess, and any model those can reach. Pick the
-  harness, model, and effort *per reviewer*. Hosted reviewers like Bugbot lock
+  harness, model, and effort _per reviewer_. Hosted reviewers like Bugbot lock
   you to their backend and their model; loupe doesn't — point it at a frontier
   closed model, a fast open one, or a whole panel of them.
 - **Local and CI are the same engine.** The exact review that runs in the GitHub
@@ -167,9 +167,11 @@ migration-risk pair.
 
 The system prompt is layered. `--prompt-file` (CLI) / `prompt-file` input
 (Action) / a reviewer's `promptFile` replaces only the **guidance** layer
-(persona + priorities). loupe always appends the reasoning note, profile
-directive, tool-access directive, repo conventions, and the JSON output
-contract — so a custom prompt can't break parsing or trigger tool loops. Write
+(persona + priorities). loupe always appends the review procedure (check
+callers first; `procedure: false` removes it), the profile directive,
+tool-access directive, repo conventions, and the JSON output contract, plus a
+reasoning note when `reasoning` is set — so a custom prompt can't break parsing
+or trigger tool loops. Write
 only persona/priorities; never the JSON schema. See `examples/loupe-prompt.md`.
 
 ## GitHub integration
@@ -181,8 +183,8 @@ exact `@v0.10.1` / a SHA for reproducibility — see
 `action.yml` is a composite Action. Copy `examples/review.example.yml`
 into a consuming repo, or register it once at the org level. A second workflow on
 comment events gives you **`@loupe` chat**: `@loupe review` (re-review),
-`@loupe fix <what>` (loupe edits the branch and pushes a commit),
-`@loupe <question>` (Q&A grounded in the diff), and `@loupe help`. Inputs mirror
+`@loupe fix` (fix every open Loupe finding in one commit), `@loupe fix <what>`
+(make a specific edit and push it), `@loupe <question>` (Q&A grounded in the diff), and `@loupe help`. Inputs mirror
 the CLI flags: `harness`, `model`, `reasoning`, `profile`, `config`, `reviewer`,
 `prompt-file`, `dir`, `skills`, `ensemble`, `timezone`, `verify`, `full`,
 `convention-paths`, `credential-providers`, `github-token`.
