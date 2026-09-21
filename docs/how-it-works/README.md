@@ -4,6 +4,14 @@ loupe is a GitHub Action that reviews pull requests with an agentic coding CLI (
 
 Source: [context-labs/loupe](https://github.com/context-labs/loupe). loupe reviews its own PRs with [`.loupe/config.json`](../../.loupe/config.json).
 
+> **Reading these pages for GitLab:** loupe runs the same pipeline on GitLab,
+> self-hosted included. The pages and diagrams use GitHub naming — on GitLab
+> the equivalents are merge-request pipelines (not GitHub events), MR notes
+> and positioned discussions (not review comments and threads), and the
+> verdict is stated in the summary note (loupe never approves an MR). The
+> `@loupe` chat commands are GitHub-only. Setup and the full difference list:
+> [docs/gitlab.md](../gitlab.md).
+
 ## Read in this order
 
 1. [Triggers](./triggers.md) — which GitHub events start a run, and what stops one. 2 min.
