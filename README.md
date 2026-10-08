@@ -60,7 +60,7 @@ highlights, and an optional diagram — not a restatement of the diff.
 ```bash
 bun install
 # default: whip + deepseek-flash through the built-in panel — one key to wire:
-DEEPSEEK_API_KEY=sk-... \
+ADMETRICS_LLM_API_KEY=sk-... \
   bun run packages/action/src/cli.ts review owner/repo#123
 
 # or bring a key for a hosted harness:
@@ -128,8 +128,10 @@ It can also declare the **whip provider + model panel** under `whip`, so the
 workflow no longer hand-writes `~/.whip/config.json` in a CI step. loupe
 materializes it into a throwaway `WHIP_HOME` at review time (never touching a
 developer's real `~/.whip`); only the API key *value* stays in the workflow —
-its env-var name is in the config. DeepSeek needs no block: loupe ships a
-built-in panel (`deepseek-flash` / `deepseek-v4-pro` via `DEEPSEEK_API_KEY`)
+its env-var name is in the config. The Admetrics gateway needs no block:
+loupe ships a
+built-in panel (`deepseek-flash` / `deepseek-v4-pro` at
+`https://llm.admetrics.dev/v1` via `ADMETRICS_LLM_API_KEY`)
 that applies whenever the model is one of those and the config declares no
 `whip` block of its own — the block below is for wiring a different provider.
 

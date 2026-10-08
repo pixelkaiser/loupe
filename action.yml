@@ -17,7 +17,7 @@ inputs:
     required: false
     default: ""
   model:
-    description: "Model id for the harness (e.g. deepseek-flash, claude-opus-4-8). Overrides .loupe.json; default deepseek-flash via the built-in DeepSeek whip panel (DEEPSEEK_API_KEY)."
+    description: "Model id for the harness (e.g. deepseek-flash, claude-opus-4-8). Overrides .loupe.json; default deepseek-flash via the built-in Admetrics whip panel (ADMETRICS_LLM_API_KEY)."
     required: false
     default: ""
   reasoning:

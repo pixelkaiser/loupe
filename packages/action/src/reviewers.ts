@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 import type { PriorComments, Profile, ReasoningEffort } from "@loupe/core";
+import type { WhipConfig } from "@loupe/harness";
 import { z } from "zod";
 
 /**
@@ -62,6 +63,14 @@ const whipConfigSchema = z.object({
   models: z.array(z.string().min(1)).min(1),
   defaultModel: z.string().optional(),
 });
+
+/** Parse a shared provider panel supplied by CI, without storing key values. */
+export function parseWhipConfigOverride(
+  value: string | undefined,
+): WhipConfig | undefined {
+  if (!value?.trim()) return undefined;
+  return whipConfigSchema.parse(JSON.parse(value));
+}
 
 const configSchema = z.object({
   reviewers: z.array(reviewerSchema).min(1),

@@ -10,7 +10,7 @@ permissions:
   pull-requests: write # required to post the inline review
 
 jobs:
-  # --- Variant A: DeepSeek (whip + built-in panel) ---------------------------
+  # --- Variant A: Admetrics (whip + built-in panel) ---------------------------
   # The default model (deepseek-flash) rides loupe's built-in whip panel; the
   # only wiring is the API key.
   review-whip:
@@ -24,7 +24,7 @@ jobs:
           reasoning: medium
           dir: inference # scope a monorepo to one folder (optional)
         env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          ADMETRICS_LLM_API_KEY: ${{ secrets.ADMETRICS_LLM_API_KEY }}
 
   # --- Variant B: external (claude + API key secret) ------------------------
   review-claude:

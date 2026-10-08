@@ -17,7 +17,12 @@ import {
 import type { WhipConfig } from "@loupe/harness";
 import { z } from "zod";
 
-import { asDirs, loadSettings, type LoupeSettings } from "./reviewers";
+import {
+  asDirs,
+  loadSettings,
+  parseWhipConfigOverride,
+  type LoupeSettings,
+} from "./reviewers";
 
 /** An empty string from an unset Action input counts as "not provided". */
 const optionalInput = z
@@ -37,6 +42,7 @@ const optionalInput = z
 const loupeEnvSchema = z.object({
   LOUPE_HARNESS: optionalInput,
   LOUPE_MODEL: optionalInput,
+  LOUPE_WHIP_CONFIG: optionalInput.transform(parseWhipConfigOverride),
   LOUPE_REASONING: optionalInput,
   LOUPE_PROMPT_FILE: z.string().optional(),
   LOUPE_CONVENTION_PATHS: z
@@ -116,17 +122,17 @@ export const DEFAULT_MODEL = "deepseek-flash";
 
 /**
  * whip's own catalog routes every model through inference-net, so loupe
- * materializes this DeepSeek panel whenever a project declares no `whip`
+ * materializes this Admetrics panel whenever a project declares no `whip`
  * block of its own — the default model then works with a plain
- * `DEEPSEEK_API_KEY` in the environment (CI group variables included).
- * Model ids are the ones api.deepseek.com actually serves.
+ * `ADMETRICS_LLM_API_KEY` in the environment (CI group variables included).
+ * Model ids are the ones the Admetrics gateway advertises.
  */
-export const DEEPSEEK_PANEL: WhipConfig = {
+export const ADMETRICS_PANEL: WhipConfig = {
   provider: {
-    name: "deepseek",
-    label: "DeepSeek",
-    baseUrl: "https://api.deepseek.com/v1",
-    apiKeyEnv: "DEEPSEEK_API_KEY",
+    name: "admetrics",
+    label: "Admetrics LLM",
+    baseUrl: "https://llm.admetrics.dev/v1",
+    apiKeyEnv: "ADMETRICS_LLM_API_KEY",
   },
   defaultModel: "deepseek-flash",
   models: ["deepseek-flash", "deepseek-v4-pro"],
@@ -134,11 +140,11 @@ export const DEEPSEEK_PANEL: WhipConfig = {
 
 /**
  * The whip panel for a model when the project didn't declare one: the
- * built-in DeepSeek panel for its models, none otherwise (whip then falls
+ * built-in Admetrics panel for its models, none otherwise (whip then falls
  * back to its own login/catalog, as before).
  */
 export function builtinWhipPanel(model: string): WhipConfig | undefined {
-  return DEEPSEEK_PANEL.models.includes(model) ? DEEPSEEK_PANEL : undefined;
+  return ADMETRICS_PANEL.models.includes(model) ? ADMETRICS_PANEL : undefined;
 }
 
 function asReasoning(v: string | undefined): ReasoningEffort | undefined {
@@ -268,9 +274,14 @@ function sharedConfig(
     ? inWorkspace(env.LOUPE_CONFIG)
     : undefined;
   // Top-level review defaults from .loupe.json. Precedence for the movable
-  // settings: Action input (explicit) → file → loupe's built-in default.
+  // settings: explicit input → shared panel default → file → built-in default.
   const file: LoupeSettings = configPath ? loadSettings(configPath) : {};
-  const model = env.LOUPE_MODEL ?? file.model ?? DEFAULT_MODEL;
+  const whipOverride = env.LOUPE_WHIP_CONFIG;
+  const model =
+    env.LOUPE_MODEL ??
+    whipOverride?.defaultModel ??
+    file.model ??
+    DEFAULT_MODEL;
 
   return {
     harnessName: env.LOUPE_HARNESS ?? file.harness ?? "whip",
@@ -301,7 +312,7 @@ function sharedConfig(
     priorComments:
       asPriorComments(env.LOUPE_PRIOR_COMMENTS) ?? file.priorComments,
     procedure: file.procedure,
-    whipConfig: file.whip ?? builtinWhipPanel(model),
+    whipConfig: whipOverride ?? file.whip ?? builtinWhipPanel(model),
   };
 }
 

@@ -1,5 +1,35 @@
 # Configuration
 
+## Shared provider defaults
+
+The default Whip model is `deepseek-flash` through
+`https://llm.admetrics.dev/v1`, using `ADMETRICS_LLM_API_KEY` from the
+environment. The built-in panel also supports `deepseek-v4-pro`.
+
+To switch a whole GitLab group, set `ADMETRICS_LLM_API_KEY` as a masked
+CI variable and set the non-secret `LOUPE_WHIP_CONFIG` variable to:
+
+```json
+{
+  "provider": {
+    "name": "admetrics",
+    "label": "Admetrics LLM",
+    "baseUrl": "https://llm.admetrics.dev/v1",
+    "apiKeyEnv": "ADMETRICS_LLM_API_KEY"
+  },
+  "defaultModel": "deepseek-flash",
+  "models": ["deepseek-flash", "deepseek-v4-pro"]
+}
+```
+
+`LOUPE_WHIP_CONFIG` overrides a repository's `whip` block in both CI and
+the CLI. Its `defaultModel` overrides the top-level repository model;
+`LOUPE_MODEL` in CI or `--model` in the CLI still takes precedence. This
+lets existing MR branches move provider without rewriting their reviewer
+policies. Named reviewer model overrides still apply. Leave the variable
+unset to use the repository panel or the built-in panel. Store only the
+key's environment-variable name in the panel, never its value.
+
 ## Reviewer profiles (`.loupe.json`)
 
 Define focused reviewers in a repo's `.loupe.json`. loupe runs every reviewer

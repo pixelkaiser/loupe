@@ -32,7 +32,7 @@ jobs:
           model: deepseek-flash
           config: .loupe.json
         env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          ADMETRICS_LLM_API_KEY: ${{ secrets.ADMETRICS_LLM_API_KEY }}
 ```
 
 See `examples/review.example.yml` for whip / claude / custom-prompt
@@ -82,7 +82,8 @@ directory.
 
 The entrypoint reads only these (parsed in `packages/action/src/config.ts`):
 `GITHUB_TOKEN`, `GITHUB_REPOSITORY`, `GITHUB_EVENT_PATH`, `GITHUB_WORKSPACE`,
-`LOUPE_PR_NUMBER`, `LOUPE_HARNESS`, `LOUPE_MODEL`, `LOUPE_REASONING`,
+`LOUPE_PR_NUMBER`, `LOUPE_HARNESS`, `LOUPE_MODEL`, `LOUPE_WHIP_CONFIG`,
+`LOUPE_REASONING`,
 `LOUPE_PROMPT_FILE`, `LOUPE_CONFIG`, `LOUPE_REVIEWER`, `LOUPE_DIR`,
 `LOUPE_CONVENTION_PATHS`, `LOUPE_CREDENTIAL_PROVIDERS`, `LOUPE_INFISICAL_ENV`,
 `LOUPE_INFISICAL_PROJECT_ID`, `LOUPE_PROFILE`, `LOUPE_VERIFY`, `LOUPE_FULL`,

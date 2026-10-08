@@ -10,8 +10,11 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 # The default harness, preinstalled so review jobs work out of the box.
+# Pin the CLI compatible with Loupe's run/NDJSON adapter; later releases
+# renamed their assets and must be checked before upgrading the harness.
+ARG WHIP_VERSION=v0.6.5
 RUN curl -fsSL -o /usr/local/bin/whip \
-  https://github.com/context-labs/whip/releases/latest/download/whip-linux-x64 \
+  https://github.com/context-labs/whip/releases/download/${WHIP_VERSION}/whip-linux-x64 \
   && chmod +x /usr/local/bin/whip
 
 WORKDIR /loupe

@@ -48,7 +48,7 @@ LOG_LEVEL=debug bun run packages/action/src/cli.ts review owner/repo#123 --dry-r
 - **GitLab**: resolved in order `--token` → `GITLAB_TOKEN` → `glab auth token`.
   Needs the `api` scope ([GitLab details](gitlab.md)).
 - **Model**: the default `deepseek-flash` runs through loupe's built-in
-  DeepSeek whip panel and needs `DEEPSEEK_API_KEY` in the environment. Other
+  Admetrics whip panel and needs `ADMETRICS_LLM_API_KEY` in the environment. Other
   models need their provider's key, or declare a `whip` panel in
   `.loupe.json` ([configuration](configuration.md)).
 

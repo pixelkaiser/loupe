@@ -12,7 +12,12 @@ import {
   resolveProviders,
   type ForgeTarget,
 } from "./config";
-import { asDirs, loadReviewers, loadSettings } from "./reviewers";
+import {
+  asDirs,
+  loadReviewers,
+  loadSettings,
+  parseWhipConfigOverride,
+} from "./reviewers";
 import { formatResult, renderReview, reviewBound, wireBinding } from "./run";
 
 const REASONING: readonly ReasoningEffort[] = ["low", "medium", "high"];
@@ -266,11 +271,17 @@ program
             ? resolveGithubToken(opts.token)
             : resolveGitlabToken(opts.token, host);
         const binding = wireBinding(target, token, logger);
-        // Top-level review defaults from .loupe.json; a flag overrides the file,
-        // the file overrides loupe's built-in default.
+        // Explicit model flags beat the shared panel default, then repo defaults.
         const settings = opts.config ? loadSettings(opts.config) : {};
+        const whipOverride = parseWhipConfigOverride(
+          process.env["LOUPE_WHIP_CONFIG"],
+        );
         const harnessName = opts.harness ?? settings.harness ?? "whip";
-        const model = opts.model ?? settings.model ?? DEFAULT_MODEL;
+        const model =
+          opts.model ??
+          whipOverride?.defaultModel ??
+          settings.model ??
+          DEFAULT_MODEL;
         const reasoningRaw = opts.reasoning ?? settings.reasoning;
         const reasoning = reasoningRaw
           ? parseReasoning(reasoningRaw)
@@ -316,7 +327,7 @@ program
           timezone,
           maxTurns,
           priorComments,
-          whipConfig: settings.whip ?? builtinWhipPanel(model),
+          whipConfig: whipOverride ?? settings.whip ?? builtinWhipPanel(model),
         };
 
         if (opts.config) {

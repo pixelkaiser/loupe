@@ -46,9 +46,12 @@ Building your own image (e.g. to preinstall a different harness CLI) is one
 Docker-in-Docker. Harness keys come through the same
 [credential chain](credentials.md) as on GitHub (`LOUPE_CREDENTIAL_PROVIDERS`,
 default `env`). The default model needs no project wiring at all: it is
-`deepseek-flash` on loupe's built-in DeepSeek whip panel, so a group-level
-`DEEPSEEK_API_KEY` CI variable is enough for every project to review out of
-the box. Other providers/models need a `whip` provider block with the right
+`deepseek-flash` on loupe's built-in Admetrics whip panel, so a group-level
+`ADMETRICS_LLM_API_KEY` CI variable is enough for every project to review out of
+the box. Set `LOUPE_WHIP_CONFIG` at group level to override existing repo
+panels and model defaults (see the
+[configuration](configuration.md#shared-provider-defaults)).
+Other providers/models need a `whip` provider block with the right
 `apiKeyEnv` in `.loupe.json`.
 
 Non-MR pipelines (branch/tag) are skipped cleanly — the job only needs the

@@ -39,8 +39,8 @@ docker:image:mr:
 
 # loupe reviews its own MRs with the image built above. Credentials come from
 # CI variables: GITLAB_TOKEN (project variable — a project access token with
-# api scope) posts the review; DEEPSEEK_API_KEY (group variable) reaches the
-# model via the whip provider panel in .loupe/gitlab.json.
+# api scope) posts the review; ADMETRICS_LLM_API_KEY (group variable) reaches the
+# model via loupe's built-in Admetrics provider panel.
 loupe-review:
   stage: build
   image: $CI_REGISTRY_IMAGE:main

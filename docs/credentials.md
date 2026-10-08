@@ -24,7 +24,7 @@ Each harness declares `credentialKeys` — the env vars it wants forwarded:
 
 | Harness | Keys | Notes |
 |---|---|---|
-| `whip` | (none) | Self-authenticates. Reads `INFERENCE_API_KEY` if present, else its own local login (`~/.whip`). inference.net is its built-in default provider. |
+| `whip` | (none) | Reads the panel's `apiKeyEnv` from the inherited environment: `ADMETRICS_LLM_API_KEY` for Loupe's default Admetrics panel. Without a panel, Whip can use its local login (`~/.whip`). |
 | `claude` | `ANTHROPIC_API_KEY` | Falls back to the local `claude` login if the key is absent. |
 | `codex` | `OPENAI_API_KEY` | — |
 
@@ -35,6 +35,7 @@ and a genuinely missing key surfaces as the harness's own auth error (visible at
 
 ## In CI
 
-The harness runs on the runner, so its key must reach the job env. With whip +
-inference.net, expose `INFERENCE_API_KEY` to the job (e.g. via Infisical) and the
-`env` provider forwards it. See [github-action.md](github-action.md).
+The harness runs on the runner, so its key must reach the job env. Expose
+`ADMETRICS_LLM_API_KEY` to use Loupe's default Whip panel, or the key named
+by a custom panel's `apiKeyEnv`. Whip reads this key from the inherited job
+environment. See [github-action.md](github-action.md).

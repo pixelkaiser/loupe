@@ -31,5 +31,5 @@ loupe-review:
     # LOUPE_REASONING: medium
     # Model keys ride the credential chain (default provider: env). The default
     # model (deepseek-flash, built-in whip panel) is covered by a group-level
-    # DEEPSEEK_API_KEY variable; other models need their key (ZAI_API_KEY /
+    # ADMETRICS_LLM_API_KEY variable; other models need their key (ZAI_API_KEY /
     # ANTHROPIC_API_KEY / ...) or a whip panel in .loupe.json.
