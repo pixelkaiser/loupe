@@ -125,7 +125,7 @@ export type ReviewRequest<R> = {
   readonly exclude?: readonly string[];
   /** Let the harness use tools to explore the checkout (needs a real workdir). */
   readonly agentic?: boolean;
-  /** Supply stable source excerpts before agent-directed exploration (opt-in). */
+  /** Supply stable source excerpts before agent-directed exploration (default true). */
   readonly evidence?: boolean;
   /** Fixed review clock for offline repeatability benchmarks. */
   readonly now?: Date;
@@ -334,7 +334,13 @@ export async function runReview<R>(
       }
     }
   }
-  if (req.evidence) {
+  // Evidence is the default for agentic reviews with a real checkout.
+  // An explicit false preserves the previous tool-directed collection path.
+  const agentic = req.agentic ?? true;
+  const scoped = subdir ? join(req.workdir, subdir) : req.workdir;
+  const treeMode = agentic && existsSync(scoped);
+  const evidenceEnabled = treeMode && req.evidence !== false;
+  if (evidenceEnabled) {
     scopedFiles.sort((a, b) => comparePaths(a.path, b.path));
     files.sort((a, b) => comparePaths(a.path, b.path));
   }
@@ -342,7 +348,6 @@ export async function runReview<R>(
 
   // Agentic (explore the checkout with tools) is the default; a reviewer opts
   // out with agentic: false to run one-shot from the diff alone.
-  const agentic = req.agentic ?? true;
   const profile = req.profile ?? "chill";
 
   // Per-glob instructions that apply to at least one file being reassessed.
@@ -365,13 +370,12 @@ export async function runReview<R>(
     skills,
     procedure: req.procedure,
     conventions: conventions.text,
-    evidence: req.evidence,
+    evidence: evidenceEnabled,
   };
   const systemPrompt = buildSystemPrompt({ ...promptOpts, agentic });
   // The harness runs where the repo is checked out. Scope to the subdir only if
   // it actually exists on disk; fall back to the workdir (or cwd) so a run
   // without a local checkout — the whole diff is in the prompt — still spawns.
-  const scoped = subdir ? join(req.workdir, subdir) : req.workdir;
   const harnessCwd = existsSync(scoped)
     ? scoped
     : existsSync(req.workdir)
@@ -385,15 +389,13 @@ export async function runReview<R>(
     );
   }
 
-  // Agentic reviews with a real checkout get a changed-file TREE of every
-  // in-scope PR file plus a diff file holding all their patches, and a focus
-  // list when only some are being reassessed. Headless reviews (and agentic
-  // with no checkout) inline only the files under review.
-  const treeMode = agentic && existsSync(scoped);
-  const evidence =
-    treeMode && req.evidence
-      ? buildReviewEvidence(req.workdir, scopedFiles)
-      : undefined;
+  // Agentic reviews pre-collect source evidence by default. Small diffs are
+  // inlined with it; large diffs and explicit opt-outs retain the diff file.
+  // Incremental reviews retain all in-scope context plus a focus list.
+  // Headless reviews (or no checkout) inline only the files under review.
+  const evidence = evidenceEnabled
+    ? buildReviewEvidence(req.workdir, scopedFiles)
+    : undefined;
   const inlineEvidenceDiff =
     evidence && renderDiff(scopedFiles).length <= 24_000;
   const diffPath =
@@ -438,7 +440,7 @@ export async function runReview<R>(
     pathInstructions,
     timezone: req.timezone,
     now: req.now,
-    dateOnly: req.evidence,
+    dateOnly: evidenceEnabled,
   };
   const headlessUserPrompt = buildUserPrompt({ ...commonPrompt, files });
   const agenticUserPrompt = treeMode

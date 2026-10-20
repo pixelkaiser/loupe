@@ -146,3 +146,16 @@ large diffs remain accessible, and dry-run makes no forge writes.
 - 2026-10-20 — Completed six final samples, manually inspected raw replies,
   reproduced the evidence prompt hash with final code, and passed all
   Taskfile-equivalent checks. Kept evidence mode opt-in and undeployed.
+
+## Activation follow-up
+
+On 2026-10-20 the user explicitly requested activating evidence mode. The
+follow-up makes source evidence the default for agentic reviews with a real
+checkout. Reviewers may set `evidence: false`, and the CLI accepts
+`--no-evidence` as an explicit override. One-shot reviews and the benchmark
+baseline retain their prior behavior. The initial trial results above are
+unchanged; activation is a user decision, not a new claim of improved recall.
+
+Release path: push the tested feature branch, merge its GitLab MR, and wait
+for the default-branch `docker:image` job to publish the new `:main` image.
+Existing consumers of that image inherit the default on future review jobs.

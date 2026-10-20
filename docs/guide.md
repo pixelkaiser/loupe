@@ -62,6 +62,7 @@ LOG_LEVEL=debug bun run packages/action/src/cli.ts review owner/repo#123 --dry-r
 | `--prior-comments <policy>` | `resolve` | Prior inline comments on re-review: `resolve` \| `delete` \| `keep`. |
 | `--max-turns <n>` | `10` | Cap on the agentic tool loop. |
 | `--no-agentic` | (agentic on) | Review one-shot from the diff, no tool use. |
+| `--no-evidence` | off | Disable the source evidence collected by default before agentic review. |
 | `--profile <name>` | `chill` | Noise: `quiet` \| `chill` \| `assertive`. |
 | `--no-verify` | (verify on) | Skip the verification pass. |
 | `--timezone <tz>` | `UTC` | Timezone label for the review environment line (e.g. `PST`). |

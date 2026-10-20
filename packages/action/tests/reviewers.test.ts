@@ -14,7 +14,7 @@ function config(json: object): string {
 }
 
 describe("dir setting", () => {
-  it("keeps evidence opt-in and accepts explicit reviewer overrides", () => {
+  it("preserves an unset evidence default and accepts explicit reviewer overrides", () => {
     const p = config({
       reviewers: [
         { name: "default" },

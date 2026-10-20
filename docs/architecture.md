@@ -56,7 +56,7 @@ forge-shaped hangs off `forge.ts` adapters, and the entry layer picks which one.
   fences so every consumer gets bare code.
 - `diff.ts` — `commentableLines` parses hunk headers to the RIGHT-side line set
   the forges accept comments on; `renderDiff` formats the diff for the prompt.
-- `evidence.ts` — opt-in bounded source excerpts, related helpers and tests;
+- `evidence.ts` — default bounded source excerpts, related helpers and tests;
   stable ordering before agentic exploration.
 - `prompt.ts` — default guidance, the three system-prompt layers, user prompt.
 - `parse.ts` — brace-depth JSON extraction + per-finding `safeParse`.

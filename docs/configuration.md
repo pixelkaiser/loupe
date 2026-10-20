@@ -67,7 +67,7 @@ whose globs match a changed file and posts each as its own labeled review
 | `model` | no | Overrides the run's model for this reviewer. |
 | `reasoning` | no | `low` \| `medium` \| `high`. Passed to the harness natively (whip `defaultEffort` in the materialized `WHIP_HOME`, `claude --effort`, codex `model_reasoning_effort`) and noted in the prompt. Unset = the harness's own default. whip without a `whip` config block keeps its own default effort; only the prompt note applies. |
 | `agentic` | no | `false` to run one-shot; omitted = agentic (the default). |
-| `evidence` | no | Opt-in: `true` supplies stable source excerpts before agentic exploration. Also `--evidence` in the CLI. See [repeatability](repeatability.md) for budgets and limitations. |
+| `evidence` | no | Enabled by default for agentic reviews with a checkout. `false` disables source pre-collection; also `--no-evidence` in the CLI. See [repeatability](repeatability.md) for budgets and limitations. |
 | `profile` | no | Noise profile: `quiet` (blockers) \| `chill` (default) \| `assertive` (all). |
 | `verify` | no | `false` to skip the verification pass (default on). |
 | `pathInstructions` | no | `[{ glob, instruction }]` extra review instructions for matching files. |

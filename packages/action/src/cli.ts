@@ -196,7 +196,11 @@ program
     "--config <path>",
     "reviewer-profiles config (.loupe.json) — runs each matching reviewer",
   )
-  .option("--evidence", "supply stable source excerpts before agentic review")
+  .option("--evidence", "enable source evidence (default for agentic reviews)")
+  .option(
+    "--no-evidence",
+    "disable pre-collected source evidence for agentic reviews",
+  )
   .option("--reviewer <name>", "run only this named reviewer from --config")
   .option(
     "--no-agentic",
