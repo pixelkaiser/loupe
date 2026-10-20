@@ -165,6 +165,15 @@ genuinely demands it, never by default. If you suspect a blocker and have
 budget left, get one independent confirmation before reporting it. When you have
 what you need, STOP and respond with ONLY the final JSON object.`.trim();
 
+const EVIDENCE_DIRECTIVE = `
+You HAVE repository access. Read the supplied diff and pre-collected source
+evidence first, in their listed order. Check the changed behavior, its callers,
+helpers, and tests before choosing further tool calls. The excerpts are bounded
+and may be incomplete: use tools for missing or ambiguous evidence. For large
+diffs, read the remaining hunks from the supplied diff file. Judge the current
+source; inspect Git history only when a specific compatibility question needs
+it. Ground findings in source evidence and return ONLY the final JSON object.`.trim();
+
 const REASONING_NOTE: Record<ReasoningEffort, string> = {
   low: "Reasoning effort: low. Do a quick pass; flag only obvious, high-confidence issues.",
   medium:
@@ -182,6 +191,7 @@ export function buildSystemPrompt(opts: {
   /** Omitted: no reasoning note; the harness's native default applies. */
   reasoning?: ReasoningEffort;
   agentic?: boolean;
+  evidence?: boolean;
   profile?: Profile;
   /** Loaded skill docs (SKILL.md bodies) to fold into the reviewer's behavior. */
   skills?: readonly string[];
@@ -209,7 +219,11 @@ export function buildSystemPrompt(opts: {
     conventionsBlock,
     opts.reasoning ? REASONING_NOTE[opts.reasoning] : "",
     PROFILE_DIRECTIVE[opts.profile ?? "chill"],
-    opts.agentic ? AGENTIC_DIRECTIVE : HEADLESS_DIRECTIVE,
+    opts.agentic
+      ? opts.evidence
+        ? EVIDENCE_DIRECTIVE
+        : AGENTIC_DIRECTIVE
+      : HEADLESS_DIRECTIVE,
     OUTPUT_CONTRACT,
   ]
     .filter(Boolean)
@@ -217,7 +231,11 @@ export function buildSystemPrompt(opts: {
 }
 
 /** Resolve a timezone label (IANA or common abbreviation) to a date/time line. */
-function environmentLine(timezone: string | undefined): string {
+function environmentLine(
+  timezone: string | undefined,
+  now = new Date(),
+  dateOnly = false,
+): string {
   const tz = timezone?.trim() || "UTC";
   const iana: Record<string, string> = {
     PST: "America/Los_Angeles",
@@ -234,12 +252,12 @@ function environmentLine(timezone: string | undefined): string {
     when = new Intl.DateTimeFormat("en-US", {
       timeZone: iana[tz] ?? tz,
       dateStyle: "full",
-      timeStyle: "short",
-    }).format(new Date());
+      ...(dateOnly ? {} : { timeStyle: "short" as const }),
+    }).format(now);
   } catch {
-    when = new Date().toISOString();
+    when = dateOnly ? now.toISOString().slice(0, 10) : now.toISOString();
   }
-  return `Environment: current date/time is ${when} (${tz}).`;
+  return `Environment: current ${dateOnly ? "date" : "date/time"} is ${when} (${tz}).`;
 }
 
 export type UserPromptInput = {
@@ -250,6 +268,9 @@ export type UserPromptInput = {
   readonly pathInstructions?: readonly string[];
   /** Timezone label for the environment line (e.g. "PST"). */
   readonly timezone?: string;
+  readonly now?: Date;
+  readonly dateOnly?: boolean;
+  readonly evidence?: string;
   /**
    * Absolute path to a file holding the full unified diff. When set (agentic
    * reviews with a real checkout), the message carries only the changed-file
@@ -307,14 +328,15 @@ export function buildUserPrompt(input: UserPromptInput): string {
       ].join("\n\n")
     : ["Diff under review:", renderDiff(input.files)].join("\n\n");
   return [
-    environmentLine(input.timezone),
+    environmentLine(input.timezone, input.now, input.dateOnly),
     cwdNote,
     `PR title: ${input.title}`,
     input.description ? `PR description:\n${input.description}` : "",
     pathNotes,
     focusNote,
-    callSitesNote,
-    diffSection,
+    ...(input.evidence
+      ? [diffSection, input.evidence, callSitesNote]
+      : [callSitesNote, diffSection]),
   ]
     .filter(Boolean)
     .join("\n\n");

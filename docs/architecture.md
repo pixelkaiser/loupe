@@ -56,6 +56,8 @@ forge-shaped hangs off `forge.ts` adapters, and the entry layer picks which one.
   fences so every consumer gets bare code.
 - `diff.ts` — `commentableLines` parses hunk headers to the RIGHT-side line set
   the forges accept comments on; `renderDiff` formats the diff for the prompt.
+- `evidence.ts` — opt-in bounded source excerpts, related helpers and tests;
+  stable ordering before agentic exploration.
 - `prompt.ts` — default guidance, the three system-prompt layers, user prompt.
 - `parse.ts` — brace-depth JSON extraction + per-finding `safeParse`.
 - `validate.ts` — inline vs dropped split.
@@ -100,6 +102,8 @@ forge-shaped hangs off `forge.ts` adapters, and the entry layer picks which one.
   (reads `promptFile` relative to the config).
 - `cli.ts` — commander CLI (single-reviewer or `--config` loop); parses GitHub
   PR and GitLab MR refs (URL or shorthand) and picks the matching token chain.
+- `benchmark.ts` — frozen local fixture, independent baseline/evidence model
+  calls, saved findings and prompt hashes; forge writes are disabled.
 - `main.ts` — Action/CI entry: same single/loop logic driven by env; skips
   GitLab non-MR pipelines cleanly.
 - `respond.ts` / `orchestrate.ts` — `@loupe` chat commands (GitHub-only,

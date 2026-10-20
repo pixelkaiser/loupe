@@ -169,6 +169,7 @@ export async function runReviews(
             include: r.include,
             exclude: r.exclude,
             agentic: r.agentic,
+            evidence: r.evidence,
             model: r.model ?? config.model,
             reasoning: r.reasoning ?? config.reasoning,
             profile: r.profile ?? config.profile,

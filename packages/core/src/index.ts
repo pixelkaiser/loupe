@@ -13,6 +13,9 @@ import type { HarnessTraceEvent } from "@loupe/harness";
 import type { Logger } from "@loupe/logger";
 import picomatch from "picomatch";
 
+import { createHash } from "node:crypto";
+
+import { buildReviewEvidence, comparePaths } from "./evidence";
 import type { Forge } from "./forge";
 import type { PullRef } from "./github";
 import type { MergeRequestRef } from "./gitlab";
@@ -68,6 +71,7 @@ export * from "./gitlab";
 export * from "./render";
 export * from "./ensemble";
 export * from "./callsites";
+export * from "./evidence";
 
 /** A concrete forge plus its matching ref — what an entry layer passes in. */
 export type ForgeBinding =
@@ -121,6 +125,10 @@ export type ReviewRequest<R> = {
   readonly exclude?: readonly string[];
   /** Let the harness use tools to explore the checkout (needs a real workdir). */
   readonly agentic?: boolean;
+  /** Supply stable source excerpts before agent-directed exploration (opt-in). */
+  readonly evidence?: boolean;
+  /** Fixed review clock for offline repeatability benchmarks. */
+  readonly now?: Date;
   /** Noise profile: quiet (blockers) | chill (default) | assertive (all). */
   readonly profile?: Profile;
   /** Per-glob extra review instructions applied to matching changed files. */
@@ -326,6 +334,10 @@ export async function runReview<R>(
       }
     }
   }
+  if (req.evidence) {
+    scopedFiles.sort((a, b) => comparePaths(a.path, b.path));
+    files.sort((a, b) => comparePaths(a.path, b.path));
+  }
   const focus = new Set(files.map((f) => f.path));
 
   // Agentic (explore the checkout with tools) is the default; a reviewer opts
@@ -353,6 +365,7 @@ export async function runReview<R>(
     skills,
     procedure: req.procedure,
     conventions: conventions.text,
+    evidence: req.evidence,
   };
   const systemPrompt = buildSystemPrompt({ ...promptOpts, agentic });
   // The harness runs where the repo is checked out. Scope to the subdir only if
@@ -377,16 +390,32 @@ export async function runReview<R>(
   // list when only some are being reassessed. Headless reviews (and agentic
   // with no checkout) inline only the files under review.
   const treeMode = agentic && existsSync(scoped);
-  const diffPath = treeMode ? writeDiffFile(scopedFiles, logger) : undefined;
+  const evidence =
+    treeMode && req.evidence
+      ? buildReviewEvidence(req.workdir, scopedFiles)
+      : undefined;
+  const inlineEvidenceDiff =
+    evidence && renderDiff(scopedFiles).length <= 24_000;
+  const diffPath =
+    treeMode && !inlineEvidenceDiff
+      ? writeDiffFile(scopedFiles, logger)
+      : undefined;
   // Callers of the exports this diff changes, found mechanically in the
   // checkout so the agent does not spend its turn budget grepping for them.
   // Diff paths are repo-relative; the checkout cwd is the subdir, so strip the
   // prefix to exclude/grep and add it back when rendering.
   const changed = treeMode
-    ? changedExports(scopedFiles).map((c) => ({
-        ...c,
-        file: c.file.slice(prefix.length),
-      }))
+    ? [...changedExports(scopedFiles), ...(evidence?.changed ?? [])]
+        .filter(
+          (c, i, all) =>
+            all.findIndex(
+              (other) => other.name === c.name && other.file === c.file,
+            ) === i,
+        )
+        .map((c) => ({
+          ...c,
+          file: c.file.slice(prefix.length),
+        }))
     : [];
   const callSites = treeMode
     ? renderCallSites(
@@ -408,18 +437,33 @@ export async function runReview<R>(
     description: pull.description,
     pathInstructions,
     timezone: req.timezone,
+    now: req.now,
+    dateOnly: req.evidence,
   };
   const headlessUserPrompt = buildUserPrompt({ ...commonPrompt, files });
-  const agenticUserPrompt = diffPath
+  const agenticUserPrompt = treeMode
     ? buildUserPrompt({
         ...commonPrompt,
         files: scopedFiles,
         diffPath,
         cwdSubdir: subdir && harnessCwd === scoped ? subdir : undefined,
         callSites,
+        evidence: evidence?.text,
         focusPaths: files.length < scopedFiles.length ? [...focus] : undefined,
       })
     : headlessUserPrompt;
+
+  if (evidence) {
+    logger.info("Prepared review evidence", {
+      chars: evidence.text.length,
+      sourceHash: createHash("sha256").update(evidence.text).digest("hex"),
+      promptHash: createHash("sha256")
+        .update(systemPrompt)
+        .update("\0")
+        .update(agenticUserPrompt)
+        .digest("hex"),
+    });
+  }
 
   // Stable prompt-cache key per repo+reviewer so whip reuses the cached system
   // prefix across runs (and its own turns within a run).

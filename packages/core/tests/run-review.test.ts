@@ -253,6 +253,70 @@ const verifyAll = (n: number) =>
   });
 
 describe("runReview end to end", () => {
+  it("evidence mode supplies source and the diff with stable prompts across checkout paths and minutes", async () => {
+    const prompts: string[] = [];
+    for (const minute of [1, 59]) {
+      const workdir = checkout();
+      writeFileSync(
+        join(workdir, "svc/a.ts"),
+        "export async function selectThing() {\n return 1;\n}\n",
+      );
+      const api = fakeOctokit({});
+      const { harness, contexts } = fakeHarness({ agentic: reviewJson([]) });
+      await runReview(
+        request(api, harness, workdir, {
+          evidence: true,
+          full: true,
+          dryRun: true,
+          now: new Date(Date.UTC(2026, 9, 20, 10, minute)),
+        }),
+      );
+      const context = contexts[0]!;
+      expect(context.userPrompt).toContain("Diff under review:");
+      expect(context.userPrompt).toContain(
+        "Source evidence collected before review",
+      );
+      expect(context.userPrompt).toContain("2|  return 1;");
+      expect(context.userPrompt).toContain("Environment: current date is");
+      expect(context.userPrompt).not.toContain(workdir);
+      expect(context.userPrompt).not.toContain("/pr.diff");
+      expect(context.systemPrompt).toContain("pre-collected source");
+      expect(context.agentic).toBe(true);
+      expect(api.calls).toEqual([]);
+      prompts.push(context.systemPrompt + "\n" + context.userPrompt);
+    }
+    expect(prompts[0]).toBe(prompts[1]);
+  });
+
+  it("keeps the full diff accessible when evidence mode's inline diff cap is exceeded", async () => {
+    const workdir = checkout();
+    const api = fakeOctokit({});
+    api.paginate.mockImplementation(async (method: unknown) => {
+      if (method === api.pulls.listFiles) {
+        return [
+          {
+            filename: "svc/a.ts",
+            patch: "@@ -1 +1 @@\n+" + "x".repeat(25_000),
+          },
+        ];
+      }
+      return [];
+    });
+    const { harness, contexts } = fakeHarness({ agentic: reviewJson([]) });
+    await runReview(
+      request(api, harness, workdir, {
+        evidence: true,
+        full: true,
+        dryRun: true,
+      }),
+    );
+    const path = contexts[0]!.userPrompt
+      .split(String.fromCharCode(96))
+      .find((s) => s.endsWith("/pr.diff"));
+    expect(path && readFileSync(path, "utf8")).toContain("x".repeat(25_000));
+    expect(contexts[0]!.systemPrompt).toContain("read the remaining hunks");
+  });
+
   it("incremental run: whole in-scope diff on disk, only B reassessed, A findings dropped, cleanup scoped to B after posting", async () => {
     const api = fakeOctokit({
       priorSummarySha: SHA_A,
