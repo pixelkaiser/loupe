@@ -14,6 +14,24 @@ function config(json: object): string {
 }
 
 describe("dir setting", () => {
+  it("preserves an unset evidence default and accepts explicit reviewer overrides", () => {
+    const p = config({
+      reviewers: [
+        { name: "default" },
+        { name: "evidence", evidence: true },
+        { name: "old", evidence: false },
+      ],
+    });
+    expect(loadReviewers(p).map((r) => r.evidence)).toEqual([
+      undefined,
+      true,
+      false,
+    ]);
+    expect(() =>
+      loadReviewers(config({ reviewers: [{ name: "bad", evidence: "true" }] })),
+    ).toThrow();
+  });
+
   it("keeps accepting the original single-string form unchanged", () => {
     const p = config({
       dir: "inference",

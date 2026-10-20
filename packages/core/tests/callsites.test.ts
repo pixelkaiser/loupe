@@ -83,6 +83,39 @@ function repo(): string {
 }
 
 describe("findCallSites", () => {
+  it("collects PHP production callers in sorted order before capping and excludes vendor/tests", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "loupe-php-"));
+    mkdirSync(join(cwd, "src"));
+    mkdirSync(join(cwd, "unit_tests"));
+    mkdirSync(join(cwd, "vendor"));
+    writeFileSync(join(cwd, "composer.json"), "{}");
+    writeFileSync(join(cwd, "src/z.php"), "Api::Import();");
+    writeFileSync(join(cwd, "src/a.php"), "Api::Import();");
+    writeFileSync(join(cwd, "unit_tests/ApiTest.php"), "Api::Import();");
+    writeFileSync(join(cwd, "vendor/Api.php"), "Api::Import();");
+    expect(
+      findCallSites(cwd, ["Import"], new Set(), "", 1)
+        .get("Import")
+        ?.map((s) => s.path),
+    ).toEqual(["src/a.php"]);
+    expect(
+      changedExports([
+        {
+          path: "src/Api.php",
+          patch: "@@ -1 +1 @@\n+    public static function Import() {",
+        },
+      ]),
+    ).toEqual([{ name: "Import", file: "src/Api.php" }]);
+    expect(
+      changedExports([
+        {
+          path: "unit_tests/ApiTest.php",
+          patch: "@@ -1 +1 @@\n+    public static function ImportMetrics() {",
+        },
+      ]),
+    ).toEqual([]);
+  });
+
   it("finds identifier references in the package only, skipping strings, comments, tests, vendored dirs", () => {
     const cwd = repo();
     expect(packageRoot(cwd, "apps/fast/lib/auth.ts")).toBe("apps/fast");

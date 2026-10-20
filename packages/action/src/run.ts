@@ -39,6 +39,7 @@ export type ReviewRunOptions = {
   readonly include?: readonly string[];
   readonly exclude?: readonly string[];
   readonly agentic?: boolean;
+  readonly evidence?: boolean;
   readonly profile?: Profile;
   readonly verify?: boolean;
   readonly full?: boolean;
@@ -105,6 +106,7 @@ export async function reviewPullRequest<R>(
     include: input.include,
     exclude: input.exclude,
     agentic: input.agentic,
+    evidence: input.evidence,
     profile: input.profile,
     verify: input.verify,
     full: input.full,

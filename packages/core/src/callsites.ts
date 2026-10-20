@@ -9,7 +9,7 @@ export type ChangedExport = { readonly name: string; readonly file: string };
 
 /** TS/JS `export function foo` … and Elixir `def foo(`/`defmacro foo(` (public only; defp is private). */
 const VALUE_DECL =
-  /export\s+(?:default\s+)?(?:async\s+)?(?:function\*?|const|let|var|class)\s+([A-Za-z_$][\w$]*)|^\s*def(?:macro)?\s+([a-z_][\w?!]*)/;
+  /export\s+(?:default\s+)?(?:async\s+)?(?:function\*?|const|let|var|class)\s+([A-Za-z_$][\w$]*)|^\s*def(?:macro)?\s+([a-z_][\w?!]*)|^\s*(?:(?:public|protected|private|static|final|abstract)\s+)+function\s+([A-Za-z_][\w]*)/;
 
 /**
  * Exported values (not types) the diff touches: a declaration line it adds or
@@ -28,7 +28,9 @@ export function changedExports(files: readonly DiffFile[]): ChangedExport[] {
       if (line.startsWith("@@")) text = line.replace(/^@@[^@]*@@\s*/, "");
       else if (/^[+\- ]/.test(line)) text = line.slice(1);
       const m = text ? VALUE_DECL.exec(text) : null;
-      const name = m ? (m[1] ?? m[2]) : undefined;
+      const name = m
+        ? (m[1] ?? m[2] ?? (TEST_PATH.test(f.path) ? undefined : m[3]))
+        : undefined;
       if (!name) continue;
       const key = `${f.path}\0${name}`;
       if (seen.has(key)) continue;
@@ -56,19 +58,28 @@ const SOURCE_GLOBS = [
   "*.cjs",
   "*.ex",
   "*.exs",
+  "*.php",
 ];
 /** Files that mark a package root; callers of a package's exports live inside it. */
 const PACKAGE_MARKERS = [
   "package.json",
   "mix.exs",
+  "composer.json",
   "go.mod",
   "Cargo.toml",
   "pyproject.toml",
 ];
-const EXCLUDE_DIRS = ["node_modules", "dist", "build", ".git", "coverage"];
+const EXCLUDE_DIRS = [
+  "node_modules",
+  "vendor",
+  "dist",
+  "build",
+  ".git",
+  "coverage",
+];
 /** Test code calls everything and breaks nothing at runtime; it only crowds out real callers. */
 const TEST_PATH =
-  /(^|\/)(tests?|__tests__|e2e)\/|\.(test|spec|e2e)\.[cm]?[jt]sx?$/;
+  /(^|\/)(tests?|unit_tests|__tests__|e2e)\/|\.(test|spec|e2e)\.[cm]?[jt]sx?$/;
 
 /**
  * The nearest ancestor of `file` (relative to `cwd`) that holds a
@@ -124,7 +135,14 @@ export function findCallSites(
   });
   if (res.error || (res.status !== 0 && res.status !== 1)) return out;
   const wordRe = new Map(names.map((n) => [n, new RegExp(`\\b${n}\\b`)]));
-  for (const raw of res.stdout.split("\n")) {
+  const rows = res.stdout.split("\n").sort((a, b) => {
+    const left = /^(.*?):(\d+):/.exec(a);
+    const right = /^(.*?):(\d+):/.exec(b);
+    const lp = left?.[1] ?? a;
+    const rp = right?.[1] ?? b;
+    return lp < rp ? -1 : lp > rp ? 1 : Number(left?.[2]) - Number(right?.[2]);
+  });
+  for (const raw of rows) {
     const m = /^(?:\.\/)?(.+?):(\d+):(.*)$/.exec(raw);
     const [, path, lineNo, rest] = m ?? [];
     if (!path || !lineNo || rest === undefined) continue;
@@ -143,7 +161,7 @@ export function findCallSites(
 }
 
 const FN_DECL =
-  /^\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\*?\s+([A-Za-z_$][\w$]*)|^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\(|function\b|[A-Za-z_$][\w$]*\s*=>)/;
+  /^\s*(?:(?:export|default|async|public|protected|private|static|final|abstract)\s+)*function\*?\s+([A-Za-z_$][\w$]*)|^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\(|function\b|[A-Za-z_$][\w$]*\s*=>)/;
 
 /** Source lines of `path` under `cwd`, or [] when unreadable. Cached per call tree. */
 function linesOf(

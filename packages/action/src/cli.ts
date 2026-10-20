@@ -196,6 +196,11 @@ program
     "--config <path>",
     "reviewer-profiles config (.loupe.json) — runs each matching reviewer",
   )
+  .option("--evidence", "enable source evidence (default for agentic reviews)")
+  .option(
+    "--no-evidence",
+    "disable pre-collected source evidence for agentic reviews",
+  )
   .option("--reviewer <name>", "run only this named reviewer from --config")
   .option(
     "--no-agentic",
@@ -250,6 +255,7 @@ program
         config?: string;
         reviewer?: string;
         agentic: boolean;
+        evidence?: boolean;
         profile?: string;
         timezone?: string;
         maxTurns?: number;
@@ -320,6 +326,7 @@ program
           }),
           dirs,
           dryRun: opts.dryRun,
+          evidence: opts.evidence,
           verify: opts.verify,
           full: opts.full,
           ensembleModels,
@@ -353,6 +360,7 @@ program
                 include: r.include,
                 exclude: r.exclude,
                 agentic: r.agentic ?? opts.agentic,
+                evidence: opts.evidence ?? r.evidence,
                 model: r.model ?? model,
                 reasoning: r.reasoning
                   ? parseReasoning(r.reasoning)

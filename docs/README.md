@@ -18,6 +18,7 @@ Start at [how-it-works/README.md](how-it-works/README.md): triggers, the review 
 - [GitHub Action](github-action.md) — wire loupe into CI, inputs, secrets.
 - [GitLab](gitlab.md) — self-hosted or gitlab.com: CI job, MR refs, token,
   differences from GitHub.
+- [Repeatability](repeatability.md) — evidence mode and an offline-forge, live-model benchmark.
 - [Review traces](review-traces.md) — reasoning/tool transcripts in the Actions
   step summary, and how to verify them locally.
 - [Releases & versioning](releases.md) — how to pin/select a version (`@v0` vs a

@@ -27,15 +27,16 @@ Legend — **Verified by** values:
 | --- | --- | --- | --- | --- |
 | [README.md](../README.md) | users · agents | pitch, quickstart, CLI flags, `.loupe.json` overview | verify-knowledge (links) · `task check` | 2026-10-08 |
 | [AGENTS.md](../AGENTS.md) | agents | agent entry point: map, commands, conventions, golden principles | verify-knowledge (size, pointers) | 2026-09-01 |
-| [docs/README.md](README.md) | all | doc index | verify-knowledge (coverage) | 2026-09-01 |
-| [docs/guide.md](guide.md) | users | what loupe does, install, running a review, CLI flag table, logging | verify-knowledge (links) | 2026-10-08 |
-| [docs/configuration.md](configuration.md) | users | `.loupe.json` reviewer fields, prompt layering, agentic mode, skills, signal-to-noise | zod schema in [packages/action/src/reviewers.ts](../packages/action/src/reviewers.ts) · DEBT-003 | 2026-10-08 |
+| [docs/README.md](README.md) | all | doc index | verify-knowledge (coverage) | 2026-10-20 |
+| [docs/guide.md](guide.md) | users | what loupe does, install, running a review, CLI flag table, logging | verify-knowledge (links) | 2026-10-20 |
+| [docs/configuration.md](configuration.md) | users | `.loupe.json` reviewer fields, prompt layering, agentic mode, skills, signal-to-noise | zod schema in [packages/action/src/reviewers.ts](../packages/action/src/reviewers.ts) · DEBT-003 | 2026-10-20 |
 | [docs/credentials.md](credentials.md) | users | provider chain, per-harness keys, CI secrets | [packages/credentials/src/index.ts](../packages/credentials/src/index.ts) | 2026-10-08 |
 | [docs/github-action.md](github-action.md) | users | workflow wiring, `@loupe` chat commands, inputs and env vars | [action.yml](../action.yml) | 2026-10-08 |
+| [docs/repeatability.md](repeatability.md) | users · maintainers | default evidence mode, opt-out, limits, frozen-fixture benchmark | [packages/core/tests/evidence.test.ts](../packages/core/tests/evidence.test.ts) · [packages/core/tests/run-review.test.ts](../packages/core/tests/run-review.test.ts) | 2026-10-20 |
 | [docs/review-traces.md](review-traces.md) | users | review traces (reasoning/tool transcripts) in the Actions step summary, local verification via `trace:preview` | [packages/action/src/trace.ts](../packages/action/src/trace.ts) · [packages/action/tests/trace.test.ts](../packages/action/tests/trace.test.ts) | 2026-09-21 |
 | [docs/gitlab.md](gitlab.md) | users | GitLab/self-hosted setup: token (masked, NOT protected — protected vars never reach MR pipelines), CI job, registry image, CLI refs, GitHub differences | [examples/gitlab-ci.yml](../examples/gitlab-ci.yml) · [packages/core/tests/gitlab.test.ts](../packages/core/tests/gitlab.test.ts) · [Dockerfile](../Dockerfile) · [.gitlab-ci.yml](../.gitlab-ci.yml) | 2026-10-08 |
 | [docs/releases.md](releases.md) | users | version pinning (`@v0` vs tag vs SHA), release process | [.github/workflows/release.yml](../.github/workflows/release.yml) | 2026-09-01 |
-| [docs/architecture.md](architecture.md) | maintainers | package layering, review pipeline, key files, extending, tests | `task check` · verify-knowledge (links) | 2026-09-17 |
+| [docs/architecture.md](architecture.md) | maintainers | package layering, review pipeline, key files, extending, tests | `task check` · verify-knowledge (links) | 2026-10-20 |
 | [docs/how-it-works/README.md](how-it-works/README.md) | all | pipeline walkthrough with Mermaid diagrams: context, first-vs-incremental review, the review run, GitHub objects, chat, triggers; GitLab framing note | verify-knowledge (links) | 2026-09-21 |
 | docs/knowledge-map.md | agents | this page | verify-knowledge | 2026-09-01 |
 <!-- verifier: catalogue-end -->
@@ -59,9 +60,9 @@ loupe's reusable review "skills" are reviewer guidance prompts plus the
 
 | Package | Role | Key files | Tests |
 | --- | --- | --- | --- |
-| [@loupe/core](../packages/core/src/index.ts) | review engine: scope → fetch → prompt → run → parse → validate → post, forge-agnostic via `Forge` | `src/index.ts` (`runReview`), `diff.ts`, `prompt.ts`, `parse.ts`, `validate.ts`, `types.ts`, `forge.ts`, `github.ts`, `gitlab.ts`, `render.ts` | [tests/diff.test.ts](../packages/core/tests/diff.test.ts) — hunk parsing, off-diff rejection, JSON extraction, severity normalization · [tests/gitlab.test.ts](../packages/core/tests/gitlab.test.ts) — GitLab adapter: fetch, marker scan, pagination, positions, degrade |
+| [@loupe/core](../packages/core/src/index.ts) | review engine: scope → fetch → prompt → run → parse → validate → post, forge-agnostic via `Forge` | `src/index.ts` (`runReview`), `diff.ts`, `prompt.ts`, `parse.ts`, `validate.ts`, `types.ts`, `forge.ts`, `github.ts`, `gitlab.ts`, `render.ts`, `callsites.ts`, `evidence.ts` | [tests/diff.test.ts](../packages/core/tests/diff.test.ts) — hunk parsing, off-diff rejection, JSON extraction, severity normalization · [tests/gitlab.test.ts](../packages/core/tests/gitlab.test.ts) — GitLab adapter: fetch, marker scan, pagination, positions, degrade |
 | [@loupe/harness](../packages/harness/src/index.ts) | agent-CLI abstraction and adapters | `src/index.ts` — `registry`, `runCli`, `runWhipStreaming` | [tests/whip-config.test.ts](../packages/harness/tests/whip-config.test.ts) |
-| [@loupe/action](../packages/action/src/main.ts) | CLI and GitHub Action / GitLab CI entry | `cli.ts`, `main.ts`, `config.ts` (forge auto-detect), `run.ts` (`wireBinding`), `reviewers.ts`, `respond.ts`, `orchestrate.ts` | none — [debt.md](plans/debt.md) DEBT-001 |
+| [@loupe/action](../packages/action/src/main.ts) | CLI and GitHub Action / GitLab CI entry | `cli.ts`, `main.ts`, `config.ts` (forge auto-detect), `run.ts` (`wireBinding`), `reviewers.ts`, `benchmark.ts`, `respond.ts`, `orchestrate.ts` | [tests/reviewers.test.ts](../packages/action/tests/reviewers.test.ts) · [tests/config.test.ts](../packages/action/tests/config.test.ts) |
 | [@loupe/credentials](../packages/credentials/src/index.ts) | provider chain: env → dotenv → infisical | `src/index.ts` | none — DEBT-002 |
 | [@loupe/logger](../packages/logger/src/index.ts) | winston structured logging, opt-in OTLP | `src/index.ts` | none — DEBT-002 |
 
@@ -81,6 +82,7 @@ be indexed here.
 
 | Plan | What it did |
 | --- | --- |
+| [docs/plans/completed/0004-review-repeatability.md](plans/completed/0004-review-repeatability.md) | opt-in stable evidence and a six-run comparison; no known-issue detection improvement |
 | [docs/plans/completed/0001-harness-engineering-playbook.md](plans/completed/0001-harness-engineering-playbook.md) | adopted the agent-legibility playbook: AGENTS.md, ExecPlans, this map, verifier + CI |
 | [docs/plans/completed/0002-gitlab-support.md](plans/completed/0002-gitlab-support.md) | GitLab support: `Forge` interface, GitLab adapter, CI/CLI entries, docs; verified live on a self-hosted instance (MR review with inline positioned discussions) |
 

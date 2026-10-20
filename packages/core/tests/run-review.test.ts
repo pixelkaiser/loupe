@@ -253,6 +253,114 @@ const verifyAll = (n: number) =>
   });
 
 describe("runReview end to end", () => {
+  it("lets an explicit false opt out of evidence collection", async () => {
+    const api = fakeOctokit({});
+    const { harness, contexts } = fakeHarness({ agentic: reviewJson([]) });
+    await runReview(
+      request(api, harness, checkout(), {
+        evidence: false,
+        dryRun: true,
+        full: true,
+      }),
+    );
+    const prompt = contexts[0]!.userPrompt;
+    const path = prompt
+      .split(String.fromCharCode(96))
+      .find((part) => part.endsWith("/pr.diff"));
+    expect(path && existsSync(path)).toBe(true);
+    expect(prompt).not.toContain("Source evidence collected before review");
+    expect(contexts[0]!.systemPrompt).not.toContain("pre-collected source");
+  });
+
+  it("does not promise source evidence for headless reviews or missing checkouts", async () => {
+    for (const agentic of [false, true]) {
+      const api = fakeOctokit({});
+      const { harness, contexts } = fakeHarness({
+        agentic: reviewJson([]),
+        headless: reviewJson([]),
+      });
+      await runReview(
+        request(api, harness, join(checkout(), "missing"), {
+          agentic,
+          evidence: true,
+          dryRun: true,
+          full: true,
+        }),
+      );
+      expect(contexts[0]!.userPrompt).not.toContain(
+        "Source evidence collected before review",
+      );
+      expect(contexts[0]!.systemPrompt).not.toContain("pre-collected source");
+    }
+  });
+
+  it("enables evidence by default with stable prompts across checkout paths and minutes", async () => {
+    const prompts: string[] = [];
+    for (const [minute, evidence] of [
+      [1, undefined],
+      [59, true],
+    ] as const) {
+      const workdir = checkout();
+      writeFileSync(
+        join(workdir, "svc/a.ts"),
+        "export async function selectThing() {\n return 1;\n}\n",
+      );
+      const api = fakeOctokit({});
+      const { harness, contexts } = fakeHarness({ agentic: reviewJson([]) });
+      await runReview(
+        request(api, harness, workdir, {
+          evidence,
+          full: true,
+          dryRun: true,
+          now: new Date(Date.UTC(2026, 9, 20, 10, minute)),
+        }),
+      );
+      const context = contexts[0]!;
+      expect(context.userPrompt).toContain("Diff under review:");
+      expect(context.userPrompt).toContain(
+        "Source evidence collected before review",
+      );
+      expect(context.userPrompt).toContain("2|  return 1;");
+      expect(context.userPrompt).toContain("Environment: current date is");
+      expect(context.userPrompt).not.toContain(workdir);
+      expect(context.userPrompt).not.toContain("/pr.diff");
+      expect(context.systemPrompt).toContain("pre-collected source");
+      expect(context.agentic).toBe(true);
+      expect(api.calls).toEqual([]);
+      prompts.push(context.systemPrompt + "\n" + context.userPrompt);
+    }
+    expect(prompts[0]).toBe(prompts[1]);
+  });
+
+  it("keeps the full diff accessible when evidence mode's inline diff cap is exceeded", async () => {
+    const workdir = checkout();
+    const api = fakeOctokit({});
+    api.paginate.mockImplementation(async (method: unknown) => {
+      if (method === api.pulls.listFiles) {
+        return [
+          {
+            filename: "svc/a.ts",
+            patch: "@@ -1 +1 @@\n+" + "x".repeat(25_000),
+          },
+        ];
+      }
+      return [];
+    });
+    const { harness, contexts } = fakeHarness({ agentic: reviewJson([]) });
+    await runReview(
+      request(api, harness, workdir, {
+        evidence: true,
+        full: true,
+        dryRun: true,
+      }),
+    );
+    const path = contexts[0]!.userPrompt
+      .split(String.fromCharCode(96))
+      .find((s) => s.endsWith("/pr.diff"));
+    expect(path && readFileSync(path, "utf8")).toContain("x".repeat(25_000));
+    expect(contexts[0]!.systemPrompt).toContain("read the remaining hunks");
+  });
+
   it("incremental run: whole in-scope diff on disk, only B reassessed, A findings dropped, cleanup scoped to B after posting", async () => {
     const api = fakeOctokit({
       priorSummarySha: SHA_A,
@@ -270,20 +378,22 @@ describe("runReview end to end", () => {
 
     const result = await runReview(request(api, harness, workdir));
 
-    // The agent ran in the subdir and saw: the whole in-scope diff on disk,
-    // a tree of both files, a focus list naming only B, and the cwd mapping.
+    // The agent saw the full in-scope diff inline, source evidence, a focus
+    // list naming only B, and the subdir cwd mapping.
     const agenticCtx = contexts[0]!;
     expect(agenticCtx.agentic).toBe(true);
     expect(agenticCtx.workdir).toBe(join(workdir, "svc"));
-    const diffPath = /`(\/[^`]*pr\.diff)`/.exec(agenticCtx.userPrompt)?.[1];
-    expect(diffPath !== undefined && existsSync(diffPath)).toBe(true);
-    const diskDiff = readFileSync(diffPath!, "utf8");
-    expect(diskDiff).toContain("### svc/a.ts");
-    expect(diskDiff).toContain("### svc/b.ts");
+    expect(agenticCtx.userPrompt).toContain("### svc/a.ts");
+    expect(agenticCtx.userPrompt).toContain("### svc/b.ts");
+    expect(agenticCtx.userPrompt).toContain(
+      "Source evidence collected before review",
+    );
     const focus = /Files to reassess[^]*?\n\n/.exec(agenticCtx.userPrompt)![0];
     expect(focus).toContain("- svc/b.ts");
     expect(focus).not.toContain("- svc/a.ts");
-    expect(agenticCtx.userPrompt).toContain("- svc/a.ts (+1 −0)");
+    expect(agenticCtx.userPrompt).toContain(
+      "+export async function selectThing",
+    );
     expect(agenticCtx.userPrompt).toContain("Your working directory is `svc/`");
     // Callers of the changed export were located mechanically and rendered
     // with repo-relative paths.

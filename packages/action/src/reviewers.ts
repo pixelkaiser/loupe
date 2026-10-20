@@ -25,6 +25,7 @@ const reviewerSchema = z
     reasoning: z.enum(["low", "medium", "high"]).optional(),
     /** Let this reviewer use tools to explore the checkout (needs a workdir). */
     agentic: z.boolean().optional(),
+    evidence: z.boolean().optional(),
     /** Noise profile: quiet | chill | assertive. */
     profile: z.enum(["quiet", "chill", "assertive"]).optional(),
     /** Second-opinion verification pass to cut false positives (default true). */
@@ -133,6 +134,7 @@ export type Reviewer = {
   readonly model?: string;
   readonly reasoning?: ReasoningEffort;
   readonly agentic?: boolean;
+  readonly evidence?: boolean;
   readonly profile?: Profile;
   readonly verify?: boolean;
   readonly pathInstructions?: readonly { glob: string; instruction: string }[];
@@ -177,6 +179,7 @@ export function loadReviewers(configPath: string): Reviewer[] {
     model: r.model,
     reasoning: r.reasoning,
     agentic: r.agentic,
+    evidence: r.evidence,
     profile: r.profile,
     verify: r.verify,
     pathInstructions: r.pathInstructions,
