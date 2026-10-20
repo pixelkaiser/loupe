@@ -15,6 +15,49 @@ function checkout() {
 }
 
 describe("review evidence", () => {
+  it.each(["latest", "contest"])(
+    "keeps %s.ts as production source and includes its matching test",
+    (name) => {
+      const root = checkout();
+      writeFileSync(
+        join(root, "src/" + name + ".ts"),
+        "export function changed() {\n return 1;\n}",
+      );
+      writeFileSync(
+        join(root, "unit_tests/" + name + ".test.ts"),
+        "export function check() {\n changed();\n}",
+      );
+      spawnSync("git", ["init", "--quiet", root]);
+      spawnSync("git", ["-C", root, "add", "."]);
+      const evidence = buildReviewEvidence(root, [
+        {
+          path: "src/" + name + ".ts",
+          patch: "@@ -1,3 +1,3 @@\n context\n-old\n+new\n context",
+        },
+      ]);
+      expect(evidence.changed).toEqual([
+        { name: "changed", file: "src/" + name + ".ts" },
+      ]);
+      expect(evidence.text).toContain("unit_tests/" + name + ".test.ts");
+      expect(evidence.text).toContain("changed();");
+    },
+  );
+
+  it("recognizes standalone PHPUnit filenames as tests", () => {
+    const root = checkout();
+    writeFileSync(
+      join(root, "ReportTest.php"),
+      "<?php\nclass ReportTest {\n public function testImport() {}\n}",
+    );
+    const evidence = buildReviewEvidence(root, [
+      {
+        path: "ReportTest.php",
+        patch: "@@ -1,4 +1,4 @@\n context\n context\n-old\n+new\n context",
+      },
+    ]);
+    expect(evidence.changed).toEqual([]);
+  });
+
   it("matches dotted TypeScript test basenames", () => {
     const root = checkout();
     writeFileSync(

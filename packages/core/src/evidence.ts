@@ -9,7 +9,11 @@ const MAX_CHARS = 48_000;
 const MAX_FILE_BYTES = 512_000;
 const MAX_FUNCTION_LINES = 180;
 const TEST_PATH =
-  /(^|\/)(tests?|unit_tests|__tests__|e2e)\/|(?:test|spec)\.[^.]+$/i;
+  /(^|\/)(tests?|unit_tests|__tests__|e2e)\/|\.(?:test|spec)\.[^./]+$/i;
+
+function isTestPath(path: string): boolean {
+  return TEST_PATH.test(path) || /(?:Test|Spec)\.php$/.test(path);
+}
 const DECL =
   /^(\s*)(?:(?:export|default|public|protected|private|static|final|abstract|async)\s+)*(?:function\*?\s*&?\s*|def(?:macro|p)?\s+|func\s+(?:\([^)]*\)\s*)?)([A-Za-z_$][\w$?!]*)\s*\(/;
 
@@ -73,8 +77,8 @@ function references(text: string, name: string): boolean {
 
 function stem(path: string): string {
   return basename(path, extname(path))
-    .replace(/(?:test|spec)/gi, "")
-    .replace(/^[._-]+|[._-]+$/g, "")
+    .replace(/[._-](?:test|spec)$/i, "")
+    .replace(/(?:Test|Spec)$/, "")
     .toLowerCase();
 }
 
@@ -137,7 +141,7 @@ export function buildReviewEvidence(
       // Preserve edits deep inside functions whose beginning exceeds the cap.
       add(source, range.start - 20, range.end + 20, 0);
       for (const decl of enclosing) {
-        if (!TEST_PATH.test(source.path))
+        if (!isTestPath(source.path))
           changed.push({ name: decl.name, file: source.path });
         addDeclaration(source, decl, 0);
       }
@@ -150,7 +154,7 @@ export function buildReviewEvidence(
     maxBuffer: 8 * 1024 * 1024,
   });
   const sourceStems = sources
-    .filter((s) => !TEST_PATH.test(s.path))
+    .filter((s) => !isTestPath(s.path))
     .map((s) => stem(s.path));
   const tests =
     tracked.status === 0
@@ -158,7 +162,7 @@ export function buildReviewEvidence(
           .split("\0")
           .filter(
             (path) =>
-              TEST_PATH.test(path) &&
+              isTestPath(path) &&
               !sources.some((source) => source.path === path) &&
               sourceStems.some(
                 (name) => name.length >= 3 && stem(path) === name,
