@@ -175,6 +175,24 @@ describe("parseReviewOutput", () => {
 });
 
 describe("parseReviewOutput concerns/diagram", () => {
+  it("treats a null optional diagram as absent without losing findings", () => {
+    const finding = {
+      path: "a.ts",
+      line: 1,
+      severity: "warning",
+      body: "Keep this finding",
+    };
+    const { review } = parseReviewOutput(
+      JSON.stringify({
+        summary: "reviewed",
+        findings: [finding],
+        diagram: null,
+      }),
+    );
+    expect(review.diagram).toBeUndefined();
+    expect(review.findings).toEqual([finding]);
+  });
+
   it("parses concerns and a diagram, dropping and counting malformed concerns", () => {
     const { review: out, malformedConcerns } = parseReviewOutput(
       JSON.stringify({

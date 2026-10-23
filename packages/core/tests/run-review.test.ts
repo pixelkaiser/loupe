@@ -168,7 +168,7 @@ function fakeOctokit(gh: FakeGitHub) {
 function fakeHarness(script: {
   agentic: string | Error;
   headless?: string;
-  verify?: string;
+  verify?: string | Error;
 }) {
   const contexts: HarnessContext[] = [];
   const harness: Harness = {
@@ -188,6 +188,7 @@ function fakeHarness(script: {
       });
       if (verifying) {
         const output = script.verify ?? "";
+        if (output instanceof Error) throw output;
         ctx.trace?.({
           type: "done",
           text: output,
@@ -483,6 +484,203 @@ describe("runReview end to end", () => {
     expect(api.issues.createComment.mock.calls[0]![0]!.body).toContain(
       "headless fallback",
     );
+  });
+
+  it("keeps an agentic review with a null diagram instead of retrying headless", async () => {
+    const api = fakeOctokit({});
+    const { harness, contexts } = fakeHarness({
+      agentic: JSON.stringify({
+        summary: "reviewed",
+        findings: [],
+        diagram: null,
+      }),
+    });
+
+    const result = await runReview(request(api, harness, checkout()));
+
+    expect(contexts).toHaveLength(1);
+    expect(result.diagnostics.mode).toBe("agentic");
+    expect(result.summary).toBe("reviewed");
+  });
+
+  it("preserves the full diff and source evidence in an incremental fallback while only reassessing B", async () => {
+    const api = fakeOctokit({ priorSummarySha: SHA_A, compare: ["svc/b.ts"] });
+    const workdir = checkout();
+    writeFileSync(
+      join(workdir, "svc/a.ts"),
+      "export async function selectThing() {\n return 123;\n}\n",
+    );
+    const { harness, contexts } = fakeHarness({
+      agentic: new Error("harness failed"),
+      headless: reviewJson([
+        { path: "svc/a.ts", line: 2, severity: "warning", body: "old A issue" },
+        {
+          path: "svc/b.ts",
+          line: 11,
+          severity: "warning",
+          body: "new B issue",
+        },
+      ]),
+      verify: verifyAll(1),
+    });
+
+    const result = await runReview(request(api, harness, workdir));
+
+    const fallback = contexts[1]!;
+    expect(fallback.agentic).toBe(false);
+    expect(fallback.userPrompt).toContain("### svc/a.ts");
+    expect(fallback.userPrompt).toContain("### svc/b.ts");
+    expect(fallback.userPrompt).toContain(
+      "Source evidence collected before review",
+    );
+    expect(fallback.userPrompt).toContain("return 123;");
+    const focus = /Files to reassess[^]*?\n\n/.exec(fallback.userPrompt)![0];
+    expect(focus).toContain("- svc/b.ts");
+    expect(focus).not.toContain("- svc/a.ts");
+    expect(fallback.systemPrompt).not.toContain("NO repository access");
+    expect(fallback.systemPrompt).toMatch(/Do NOT call\s+tools/);
+    expect(result.inline.map((finding) => finding.path)).toEqual(["svc/b.ts"]);
+    expect(result.diagnostics.outOfScopeDropped).toBe(1);
+    expect(contexts[2]!.userPrompt).toContain("### svc/a.ts");
+    expect(contexts[2]!.userPrompt).toContain("return 123;");
+  });
+
+  it("verifies a standalone PR-wide concern against the full diff before requesting changes", async () => {
+    const api = fakeOctokit({ priorSummarySha: SHA_A, compare: ["svc/b.ts"] });
+    const { harness, contexts } = fakeHarness({
+      agentic: JSON.stringify({
+        summary: "reviewed",
+        findings: [],
+        concerns: [
+          {
+            title: "Missing implementation",
+            detail: "A does not exist",
+            severity: "blocker",
+          },
+        ],
+      }),
+      verify: JSON.stringify({
+        verdicts: [{ index: 0, real: false, reason: "A is in the full diff" }],
+      }),
+    });
+
+    const result = await runReview(request(api, harness, checkout()));
+
+    expect(contexts).toHaveLength(2);
+    expect(contexts[1]!.userPrompt).toContain("### svc/a.ts");
+    expect(contexts[1]!.userPrompt).toContain(
+      "#0 [blocker] PR-wide concern: Missing implementation",
+    );
+    expect(result.requestedChanges).toBe(false);
+    expect(result.diagnostics.verify).toBe("passed");
+    expect(result.diagnostics.verifyDropped).toBe(1);
+    expect(api.issues.updateComment.mock.calls[0]![0]!.body).not.toContain(
+      "Missing implementation",
+    );
+  });
+
+  it("maps mixed verification verdicts to their inline findings and PR-wide concerns", async () => {
+    const api = fakeOctokit({});
+    const { harness, contexts } = fakeHarness({
+      agentic: JSON.stringify({
+        summary: "reviewed",
+        findings: [
+          {
+            path: "svc/a.ts",
+            line: 2,
+            severity: "blocker",
+            body: "False inline",
+          },
+        ],
+        concerns: [
+          {
+            title: "Real concern",
+            detail: "Supported by source",
+            severity: "blocker",
+          },
+        ],
+      }),
+      verify: JSON.stringify({
+        verdicts: [
+          { index: 0, real: false },
+          { index: 1, real: true },
+        ],
+      }),
+    });
+
+    const result = await runReview(request(api, harness, checkout()));
+
+    expect(contexts[1]!.userPrompt).toContain("#0 [blocker] svc/a.ts:2");
+    expect(contexts[1]!.userPrompt).toContain(
+      "#1 [blocker] PR-wide concern: Real concern",
+    );
+    expect(result.inline).toEqual([]);
+    expect(result.requestedChanges).toBe(true);
+    expect(result.diagnostics.verify).toBe("passed");
+    expect(result.diagnostics.verifyDropped).toBe(1);
+    expect(api.issues.createComment.mock.calls[0]![0]!.body).toContain(
+      "Real concern",
+    );
+  });
+
+  it.each(["", JSON.stringify({ verdicts: [{ index: 0, real: false }] })])(
+    "keeps findings and concerns when verification is incomplete: %s",
+    async (verify) => {
+      const api = fakeOctokit({});
+      const { harness } = fakeHarness({
+        agentic: JSON.stringify({
+          summary: "reviewed",
+          findings: [
+            {
+              path: "svc/a.ts",
+              line: 2,
+              severity: "warning",
+              body: "Inline issue",
+            },
+          ],
+          concerns: [
+            { title: "Concern", detail: "Needs review", severity: "blocker" },
+          ],
+        }),
+        verify,
+      });
+
+      const result = await runReview(request(api, harness, checkout()));
+
+      expect(result.inline).toHaveLength(1);
+      expect(result.requestedChanges).toBe(true);
+      expect(result.diagnostics.verify).toBe("invalid");
+      expect(result.diagnostics.verifyDropped).toBe(0);
+      expect(api.issues.createComment.mock.calls[0]![0]!.body).toContain(
+        "Concern",
+      );
+    },
+  );
+
+  it("keeps a PR-wide concern if verification fails and skips verification when disabled", async () => {
+    for (const verify of [true, false]) {
+      const api = fakeOctokit({});
+      const { harness, contexts } = fakeHarness({
+        agentic: JSON.stringify({
+          summary: "reviewed",
+          concerns: [
+            { title: "Concern", detail: "Needs review", severity: "blocker" },
+          ],
+        }),
+        verify: new Error("verification unavailable"),
+      });
+
+      const result = await runReview(
+        request(api, harness, checkout(), { verify }),
+      );
+
+      expect(contexts).toHaveLength(verify ? 2 : 1);
+      expect(result.requestedChanges).toBe(true);
+      expect(result.diagnostics.verify).toBe(verify ? "failed" : "skipped");
+      expect(api.issues.createComment.mock.calls[0]![0]!.body).toContain(
+        "Concern",
+      );
+    }
   });
 
   it("tags primary and verification trace events", async () => {
