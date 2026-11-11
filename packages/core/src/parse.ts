@@ -12,6 +12,21 @@ import {
 } from "./types";
 
 /**
+ * Neutralize any loupe control marker the model echoed into its own output.
+ * loupe re-parses `<!-- loupe:... -->` markers out of posted comment bodies to
+ * decide what has already been reviewed (summary SHA) and which combined-summary
+ * sections to preserve. Attacker-influenced diff/content can induce the model to
+ * emit a forged marker in its review text; placed in a posted body it can win a
+ * positional parse (suppressing incremental review, N7) or mis-close a section
+ * boundary (wiping a sibling reviewer's findings, N10). Breaking the `loupe:`
+ * token with a zero-width space keeps the text a hidden HTML comment but stops it
+ * matching the parsers, so loupe's own trailing markers stay authoritative.
+ */
+function neutralizeMarkers(s: string): string {
+  return s.replace(/<!--(\s*)loupe:/gi, "<!--$1loupe​:");
+}
+
+/**
  * Parse JSON, repairing LLM-malformed output (truncation, unescaped chars in
  * freeform strings, trailing commas) rather than throwing. Models routinely emit
  * *almost* valid JSON; a strict parse would drop the whole review.
@@ -43,9 +58,12 @@ export type ParsedReview = {
  * or code fences, so we grab the last balanced {...} block and validate it.
  * Throws if no recognizable review object is found — a malformed review is a
  * hard failure, not a silent empty review. "Recognizable" means the object
- * carries a string `summary`; `findings` and `concerns` may be omitted for a
- * clean review but must be arrays when present. An unrelated object like
- * `{"status":"done"}` must not parse as an empty clean review.
+ * carries at least one review key (`summary`/`findings`/`concerns`/
+ * `highlights`/`diagram`); `summary` may be omitted (a model with nothing to
+ * report sometimes emits only `{"highlights":[],"diagram":""}` — that is an
+ * empty clean review), but when present it must be a string and
+ * `findings`/`concerns` must be arrays. An unrelated object like
+ * `{"status":"done"}` carries no review key and must not parse as a review.
  */
 export function parseReviewOutput(stdout: string): ParsedReview {
   if (stdout.trim().length === 0) {
@@ -69,18 +87,35 @@ export function parseReviewOutput(stdout: string): ParsedReview {
     summary?: unknown;
     findings?: unknown;
     concerns?: unknown;
+    highlights?: unknown;
+    diagram?: unknown;
   } | null;
   const isArrayOrAbsent = (v: unknown): boolean =>
     v === undefined || Array.isArray(v);
+  // "Recognizable review" = an object carrying at least one review key. A model
+  // that has nothing to report may emit a minimal object (e.g.
+  // `{"highlights":[],"diagram":""}`) with no `summary` — that is an empty clean
+  // review, not a failure (schema defaults summary to "" and the arrays to []).
+  // Unrelated JSON like `{"status":"done"}` carries no review key and still fails.
+  const reviewKeys = [
+    "summary",
+    "findings",
+    "concerns",
+    "highlights",
+    "diagram",
+  ];
+  const hasReviewKey =
+    typeof shape === "object" &&
+    shape !== null &&
+    reviewKeys.some((k) => k in shape);
   if (
-    typeof shape !== "object" ||
-    shape === null ||
-    typeof shape.summary !== "string" ||
-    !isArrayOrAbsent(shape.findings) ||
-    !isArrayOrAbsent(shape.concerns)
+    !hasReviewKey ||
+    (shape?.summary !== undefined && typeof shape.summary !== "string") ||
+    !isArrayOrAbsent(shape?.findings) ||
+    !isArrayOrAbsent(shape?.concerns)
   ) {
     throw new Error(
-      `Harness output is not a review (needs a string "summary"; "findings"/"concerns" must be arrays when present):\n${candidate.slice(0, 1000)}`,
+      `Harness output is not a review (expected an object with a "summary"/"findings"/"concerns"/"highlights"/"diagram" key; "summary" a string and "findings"/"concerns" arrays when present):\n${candidate.slice(0, 1000)}`,
     );
   }
   const { summary, findings, concerns, highlights, diagram } =
@@ -101,24 +136,37 @@ export function parseReviewOutput(stdout: string): ParsedReview {
   for (const item of findings) {
     const kept = findingSchema.safeParse(item);
     if (kept.success) {
-      keptFindings.push(kept.data);
+      keptFindings.push({
+        ...kept.data,
+        body: neutralizeMarkers(kept.data.body),
+      });
       continue;
     }
     // A rejected finding is usually just a bad line number. Keep it as a note
     // when the path and body still read — the model's work is otherwise lost
     // with nothing but a count to show for it.
     const salvaged = salvagedFindingSchema.safeParse(item);
-    if (salvaged.success) salvagedFindings.push(salvaged.data);
+    if (salvaged.success)
+      salvagedFindings.push({
+        ...salvaged.data,
+        body: neutralizeMarkers(salvaged.data.body),
+      });
     else malformedFindings++;
   }
-  const keptConcerns = pick(concerns, concernSchema);
+  const keptConcerns = pick(concerns, concernSchema).map((c) => ({
+    ...c,
+    title: neutralizeMarkers(c.title),
+    detail: neutralizeMarkers(c.detail),
+  }));
   return {
     review: {
-      summary,
+      summary: neutralizeMarkers(summary),
       findings: keptFindings,
       concerns: keptConcerns,
-      highlights: highlights.map((h) => h.trim()).filter(Boolean),
-      diagram: diagram?.trim() ? diagram.trim() : undefined,
+      highlights: highlights
+        .map((h) => neutralizeMarkers(h.trim()))
+        .filter(Boolean),
+      diagram: diagram?.trim() ? neutralizeMarkers(diagram.trim()) : undefined,
     },
     salvagedFindings,
     malformedFindings,

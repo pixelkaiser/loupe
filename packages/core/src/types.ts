@@ -135,6 +135,16 @@ export function severitiesForProfile(profile: Profile): readonly Severity[] {
   return PROFILE_KEEP[profile];
 }
 
+/** Sort order for ranking findings: blockers first, then warnings, then nits. */
+const SEVERITY_RANK: Record<Severity, number> = {
+  blocker: 0,
+  warning: 1,
+  nit: 2,
+};
+export function severityRank(severity: Severity): number {
+  return SEVERITY_RANK[severity];
+}
+
 /** One verdict from the verification pass, keyed by finding index. */
 export const verdictSchema = z.object({
   index: z.coerce.number().int().nonnegative(),

@@ -15,15 +15,19 @@ This page expands the **Build context and run agent** box in [A review run](./re
 
 ## System prompt, in order
 
-Order matters for caching. Everything here is identical across PRs for a given reviewer, so the provider reuses the cached prefix. `-cache-key loupe/<owner>/<repo>/<reviewer>` names that prefix.
+Order matters for caching. Everything here is identical across PRs for a given reviewer, so the provider reuses the cached prefix. `-cache-key loupe/<owner>/<repo>/<reviewer>` names that prefix. The key is on by default; set `promptCache: false` (the `prompt-cache` Action input / `--no-prompt-cache` flag) for a reviewer whose model rejects `prompt_cache_key` — those models cache the prefix automatically by match, so the key is redundant. If the provider 400s on the key, the whip harness also self-heals by retrying once without it.
 
 1. **Guidance.** The reviewer's `prompt` or `promptFile`, verbatim. It replaces loupe's default guidance when set.
 2. **Procedure.** Always appended, even under custom guidance: locate and read the callers of every changed export before judging, follow thin wrappers one more hop, treat a newly interactive or blocking call inside a spinner or other terminal-owning wrapper as a defect. `procedure: false` removes it.
 3. **Skills.** Each path in `skills` is read from the checkout. A directory means its `SKILL.md`. A missing skill logs a warning and is skipped.
-4. **Conventions.** Every convention doc that exists at the PR head, concatenated under `# <path>` headers. Fetched via the GitHub API, not the checkout.
+4. **Conventions.** Every convention doc that exists at the PR head, concatenated under `# <path>` headers. Fetched through the selected forge API.
+
+Both skills and conventions are read from the PR head, so on an untrusted PR their contents are attacker-influenced. loupe wraps both blocks in an `<untrusted-repo-docs>` fence that tells the model to treat them as reference, never as instructions that override the system prompt, relax the review, change the output format, or suppress findings. A strongly-worded skill is therefore followed as guidance, not as an authoritative override.
 5. **Reasoning note.** One sentence, only when `reasoning` is configured. The same value goes to the harness natively.
 6. **Profile directive.** Which severities to report.
-7. **Tool directive.** Agentic: you have the checkout, read hunks from the diff file on demand, spend the turn budget on callers and contracts first, use subagents only for genuinely parallel work (on the same model as the review), then stop and emit JSON. Headless (verify pass, retry, chat): no tools, diff is inline.
+7. **Tool directive.** Agentic reviews can inspect the checkout and use
+   subagents on the same review model. Headless fallback uses only supplied
+   context. Verification can use tools when a checkout is available.
 8. **Output contract.** One JSON object, not wrapped in a code fence: `summary`, `concerns[]`, `highlights[]`, optional `diagram`, `findings[]` with `path`, `line` (new-file line, must be in the diff), `severity`, `body`. `summary`, `detail`, and `body` are GitHub Markdown and may hold paragraphs and fenced code blocks.
 
 ## User message
@@ -35,7 +39,8 @@ Order matters for caching. Everything here is identical across PRs for a given r
 - On an incremental run: "Files to reassess", then "the other listed files are context".
 - **Call sites of changed exports.** Computed mechanically before the agent starts: every exported value the diff touches (declaration lines, hunk headers, hunk context), its callers in the same package, then the functions enclosing those calls and their callers, up to three hops. Each site carries four lines of preceding context, so a `withProgress(` wrapping the caller is visible in the prompt. Test files, strings, comments, and vendored dirs are skipped. This is what lets a five-turn agent reach a bug three files away from the diff.
 - **Agentic:** a tree of every in-scope PR file and the absolute path of `pr.diff`. The diff is not inlined so it is not re-sent on every turn.
-- **Headless:** the rendered diff of the reassessed files, `### <path>` then the unified patch.
+- **Headless:** the full in-scope diff, source evidence when available, and
+  the incremental focus list.
 
 ## What is in the diff file
 

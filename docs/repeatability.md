@@ -85,7 +85,8 @@ Prompt hashes reveal whether model inputs were actually identical; matching
 hashes do not make model generation deterministic.
 
 Verification checks proposed inline findings and PR-wide concerns against
-the full in-scope diff and available source evidence. It cannot recover an
+the full in-scope diff and available source evidence, with checkout access
+when the review is agentic. It cannot recover an
 issue a discovery pass missed. Likewise, reusing a cached review guarantees the same
 answer while preserving any omissions, so this experiment does not cache
 answers. Evidence increases the initial prompt size; fewer tool calls alone

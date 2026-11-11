@@ -1,71 +1,82 @@
 # A review run
 
-
-`runReviews` fans out one `runReview` per reviewer in `.loupe.json`, in parallel. Everything below happens once per reviewer. Code: `packages/core/src/index.ts`.
+`runReviews` produces one review per configured profile in parallel, removes
+duplicate findings across profiles, then publishes each result. A single
+`runReview` call uses the same produce and publish stages. The engine lives in
+`packages/core/src/index.ts`; orchestration lives in
+`packages/action/src/orchestrate.ts`.
 
 ## Pipeline
 
 ```mermaid
 flowchart LR
-    A[Fetch and scope PR files] --> B[Choose full or incremental scope]
+    A[Fetch and scope PR or MR files] --> B[Choose incremental focus]
     B --> C{Files to assess?}
-    C -->|no| X[Stop; preserve prior comments]
-    C -->|yes| D[Build context and run agent]
-    D --> E[Parse, anchor, and filter findings]
-    E --> F[Verify or reach ensemble consensus]
-    F --> G[Post review and summary]
+    C -->|no| X[Preserve prior comments]
+    C -->|yes| D[Collect evidence and run reviewers]
+    D --> E[Parse, anchor, and filter]
+    E --> F[Merge ensemble results]
+    F --> V[Verify findings and concerns]
+    V --> U[Deduplicate across reviewers]
+    U --> L[Apply inline comment cap]
+    L --> G{Still open at reviewed head?}
+    G -->|yes| P[Publish through forge]
+    G -->|no| X
 ```
 
 ## Step by step
 
-1. **Fetch.** GitHub reads in parallel: `pulls.get`, `pulls.listFiles` (paginated, with patches), and `repos.getContent` for each convention doc at the PR head. Convention paths default to `CLAUDE.md, AGENTS.md, .loupe.md, CONTRIBUTING.md`, prefixed with `dir` when set.
-2. **Scope.** Keep files under any listed `dir` that match the reviewer's `include` and miss its `exclude`. Zero files means the reviewer is skipped with no GitHub writes.
-3. **Incremental or full.** See [First run vs later runs](./first-vs-incremental.md). Default is incremental. `@loupe review` and the `full` input force full.
-4. **Prompts.** Every in-scope PR file's patch is rendered as a `### <path>` section and written to a temp file. loupe greps the checkout for callers of the exports the diff touches, three hops deep within the package. The user prompt carries the file tree, that path, the cwd-to-repo path mapping when `dir` is set, the call-site list, and on an incremental run the list of files to reassess. See [What the agent sees](./context.md).
-5. **Run the agent.** For whip: `whip run --format json -quiet -no-session
-    -max-turns <n> -system <prompt> -m <model> -cache-key
-    loupe/<owner>/<repo>/<reviewer>`, prompt on stdin, in a throwaway
-    `WHIP_HOME` built from the config's `whip` block (with `defaultEffort` when
-    `reasoning` is set). `claude` gets `--effort`, `codex` gets `-c
-    model_reasoning_effort`. If the agentic run throws or returns something that
-    is not a review, loupe retries once headless with the full in-scope diff,
-    the incremental focus list, and any source evidence already collected. The
-    run is marked degraded. The retry must use only the supplied context and
-    must not treat omitted code as missing.
-6. **Parse.** The last `{...}` in stdout is the review. It must carry a string
-    `summary`, so `{}` or `{"status":"done"}` is a failure, not a clean review;
-    `findings` and `concerns` may be omitted for a clean review but must be
-    arrays when present. An omitted or null optional `diagram` means no diagram.
-    Each finding is validated on its own; malformed entries are dropped and
-    counted. Off-scale severities (`critical`, `minor`, ...) map onto blocker,
-    warning, nit.
-7. **Scope.** On an incremental run, findings anchored on a file outside the reassessed set are dropped and counted, so they cannot duplicate a prior comment that was deliberately kept.
-8. **Anchor.** GitHub only accepts inline comments on lines present in the diff. A finding on an exact diff line stays inline. One within 10 lines snaps to the nearest diff line. Anything else, or on a file not in scope, becomes an off-diff note in the summary.
-9. **Profile filter.** `quiet` keeps blockers, `chill` (default) keeps blockers and warnings, `assertive` keeps everything.
-10. **Verify.** If any inline findings or PR-wide concerns survived and `verify`
-    is on (default), one more headless call asks the same model to mark each
-    `real: true|false`. It receives the full in-scope diff and available source
-    evidence, including earlier commits in an incremental review. Only
-    contradictions in the supplied context or duplicate issues justify
-    rejection; missing context does not. Rejected findings and concerns are
-    dropped and counted before computing the verdict. An error, or a verdict set
-    that is not exactly one verdict per finding and concern, keeps them all and
-    marks verification `failed` or `invalid`. An `ensemble` (≥2 models) replaces
-    this step: every model runs the review, only findings a majority agrees on
-    stay inline, and minority findings are surfaced in a collapsed
-    lower-confidence section.
-11. **Post.** See [GitHub objects](./github-objects.md).
+1. **Fetch and scope.** The forge reads PR/MR metadata, changed files, and
+   convention docs. Paginated collections stop after 20 pages. Paths must match
+   the reviewer's directories and include/exclude patterns. An empty scope
+   produces no review writes.
+2. **Choose focus.** A previous review marker identifies the last reviewed
+   commit. The incremental delta controls which files may receive findings;
+   the full in-scope diff remains context. A failed history lookup triggers a
+   full review while preserving prior comments. See
+   [First run vs later runs](./first-vs-incremental.md).
+3. **Prepare context.** Agentic reviews with a checkout collect bounded source
+   evidence by default. Small diffs accompany that evidence inline; larger
+   diffs use a temporary file. Caller information and the mapping from working
+   directory to repository-relative paths help the reviewer explore correctly.
+4. **Run.** The selected harness receives the system and user prompts. An
+   agentic error may retry once headless, retaining the full in-scope diff,
+   focus list, and collected evidence. Quota and rate-limit errors fail without
+   this retry. A rejected prompt-cache key retries once without the key.
+5. **Parse and validate.** A recognizable review object may omit `summary`;
+   unrelated JSON is rejected. An omitted or null `diagram` means no diagram.
+   Findings are validated individually, scoped to reassessed files, anchored
+   to diff lines where possible, and filtered by severity. Unanchorable
+   findings become summary notes.
+6. **Ensemble.** When configured, run each model and keep majority-agreed
+   findings inline. Agreement includes text similarity, not just position.
+   Failed models are reported; surviving models retain the original majority
+   threshold. Minority findings appear in a lower-confidence summary section.
+7. **Verify.** The verifier checks inline findings and PR-wide concerns against
+   the full in-scope diff and evidence. If the review was agentic and a checkout
+   exists, it can inspect surrounding code. Headless verification rejects
+   claims requiring unavailable context. Invalid or failed verification keeps
+   all findings and concerns and marks the run as degraded.
+8. **Deduplicate and cap.** The orchestrator deduplicates the union of reviewers'
+   inline findings. Then each review applies `maxComments`, ranking by severity.
+   Overflow appears in the summary and still contributes to the verdict.
+9. **Publish.** The forge rechecks the reviewed head and open state before
+   publishing. Merged, closed, or changed-head reviews are skipped. The combined
+   summary has a separate open-state check. A transient check failure allows
+   publication and is logged. GitHub uses reviews and summary comments; GitLab
+   uses positioned discussions and summary notes. Skipped reviewers preserve
+   their earlier summary sections.
 
 ## Limits
 
 | Knob | Default | Effect |
 | --- | --- | --- |
 | `maxTurns` | 10 | Agentic tool-loop cap, per reviewer or top level |
-| headless cap | 10, fixed | Safety net for the verify pass and the one-shot retry |
-| `reasoning` | harness default | Native effort setting on the harness plus one sentence in the prompt |
+| `maxComments` | 10 | Inline cap; additional findings remain in the summary |
+| headless cap | 10 | Safety cap for fallback and headless verification |
+| `reasoning` | harness default | Native effort setting and a prompt note |
 
-Hitting `maxTurns` mid-exploration is an error from the harness, which triggers the headless retry.
-
-The pipeline hands its result to [GitHub objects](./github-objects.md), which defines the review, summary, and cleanup behavior.
-
-Next: [What the agent sees](./context.md).
+The repository's own reviewer configurations can override these defaults.
+A turn-limit error can trigger the headless fallback. See
+[GitHub objects](./github-objects.md) for posting details and
+[GitLab setup](../gitlab.md) for the corresponding MR workflow.

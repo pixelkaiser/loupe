@@ -1,19 +1,66 @@
-import type { ForgeBinding, ReviewResult } from "@loupe/core";
+import {
+  type ForgeBinding,
+  dedupeFindings,
+  type Finding,
+  type ProducedReview,
+  type ReviewDiagnostics,
+  type ReviewResult,
+  type ReviewerFindings,
+  type SkipReason,
+} from "@loupe/core";
+import { HarnessError, type HarnessErrorKind } from "@loupe/harness";
 import type { Logger } from "@loupe/logger";
 
 import type { Config } from "./config";
 import { loadReviewers } from "./reviewers";
 import {
   formatResult,
-  reviewBound,
+  produceReviewPullRequest,
+  publishReviewPullRequest,
+  resultFromProduced,
   wireBinding,
   type ReviewRunOptions,
+  withBinding,
 } from "./run";
 import {
   createTraceCollector,
   writeReviewsTraceToSummary,
   type ReviewerTrace,
 } from "./trace";
+
+function produceBound(
+  binding: ForgeBinding,
+  input: ReviewRunOptions,
+): Promise<ProducedReview> {
+  return withBinding(binding, (forge, ref) =>
+    produceReviewPullRequest({ ...input, forge, ref }),
+  );
+}
+
+function publishBound(
+  binding: ForgeBinding,
+  input: ReviewRunOptions,
+  produced: ProducedReview,
+  inline: readonly Finding[],
+  diagnostics: ReviewDiagnostics,
+): Promise<string> {
+  return withBinding(binding, (forge, ref) =>
+    publishReviewPullRequest(
+      { ...input, forge, ref },
+      produced,
+      inline,
+      diagnostics,
+    ),
+  );
+}
+
+function checkBoundPublishable(binding: ForgeBinding, sha: string) {
+  return withBinding(binding, (forge, ref) => forge.checkPublishable(ref, sha));
+}
+
+function checkBoundOpen(binding: ForgeBinding) {
+  return withBinding(binding, (forge, ref) => forge.checkOpen(ref));
+}
 
 /** Post through whichever forge the binding carries (the switch narrows the
  * forge/ref pair to matching concrete types). */
@@ -43,41 +90,69 @@ async function publishCombinedSummary(
 
 /** What one reviewer did: its result, or the failure that was reported on the PR. */
 export class CombinedSummaryPublicationError extends Error {
-  constructor(cause: unknown) {
+  /** The reviewer outcomes from the completed run, recoverable when the
+   * combined summary failed to post so a caller can still surface status. */
+  readonly outcomes: readonly ReviewerOutcome[];
+  constructor(cause: unknown, outcomes: readonly ReviewerOutcome[]) {
     super(cause instanceof Error ? cause.message : String(cause));
     this.name = "CombinedSummaryPublicationError";
     this.cause = cause;
+    this.outcomes = outcomes;
   }
 }
 
 export type ReviewerOutcome =
   | { readonly name: string; readonly ok: true; readonly result: ReviewResult }
-  | { readonly name: string; readonly ok: false; readonly error: string };
+  | {
+      readonly name: string;
+      readonly ok: false;
+      readonly error: string;
+      /** The classified HarnessError kind, if the failure was a harness error. */
+      readonly kind?: HarnessErrorKind;
+    };
+
+/** One reviewer's produce phase: its produced review, or the failure reported on the PR. */
+type ProducedOutcome =
+  | {
+      readonly name: string;
+      readonly ok: true;
+      readonly produced: ProducedReview;
+    }
+  | {
+      readonly name: string;
+      readonly ok: false;
+      readonly error: string;
+      readonly kind?: HarnessErrorKind;
+    };
 
 /**
- * Run one reviewer, reporting its own failure on the PR/MR so a broken
- * reviewer never reads as silence. The failure comment carries a bounded
+ * Produce one reviewer's review without posting it, so the orchestrator can
+ * deduplicate the union before publishing. A failure is reported on the PR so a
+ * broken reviewer never reads as silence: the failure comment carries a bounded
  * reason and no marker or SHA, so it can never be mistaken for a review or
  * advance incremental state. `onTrace` receives the reviewer's normalized
  * harness events (if the caller wants to record them).
  */
-async function runOne(
+async function produceOne(
   binding: ForgeBinding,
   input: ReviewRunOptions,
   label: string,
   logger: Logger,
   onTrace?: (e: Parameters<NonNullable<ReviewRunOptions["trace"]>>[0]) => void,
-): Promise<ReviewerOutcome> {
+): Promise<ProducedOutcome> {
   try {
-    const result = await reviewBound(binding, {
-      ...input,
-      trace: onTrace,
-    });
-    logger.info(`[${label}] ${formatResult(result)}`);
-    return { name: label, ok: true, result };
+    const produced = await produceBound(binding, { ...input, trace: onTrace });
+    logger.info(`[${label}] produced ${produced.inline.length} finding(s)`);
+    return { name: label, ok: true, produced };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
-    logger.error(`[${label}] review failed`, { error: reason });
+    // The harness already classified its own failures when it built the
+    // HarnessError, so carry that kind through. Don't re-classify arbitrary
+    // error strings here — an Octokit 402/429 or a config error mentioning
+    // "billing" would otherwise be misrouted to a quota/rate-limit status a
+    // workflow routes to #billing. Non-harness failures stay undefined (failed).
+    const kind = err instanceof HarnessError ? err.kind : undefined;
+    logger.error(`[${label}] review failed`, { error: reason, kind });
     try {
       await postTopLevelComment(
         binding,
@@ -88,17 +163,28 @@ async function runOne(
         error: postErr instanceof Error ? postErr.message : String(postErr),
       });
     }
-    return { name: label, ok: false, error: reason };
+    return { name: label, ok: false, error: reason, kind };
   }
 }
 
-function renderCombinedSummary(outcomes: readonly ReviewerOutcome[]): string {
+/** Human phrasing for a pre-publish skip, for the combined summary and re-review comment. */
+export function skipReasonText(reason: SkipReason): string {
+  if (reason === "merged") return "merged";
+  if (reason === "closed") return "closed";
+  return "head moved";
+}
+
+export function renderCombinedSummary(
+  outcomes: readonly ReviewerOutcome[],
+): string {
   const sections = outcomes.map((outcome) => {
     const start = `<!-- loupe:section:${outcome.name}:start -->`;
     const end = `<!-- loupe:section:${outcome.name}:end -->`;
     let content: string;
     if (!outcome.ok) {
       content = `## ${outcome.name}\n\n⚠️ Reviewer failed: ${outcome.error.split("\n")[0]?.slice(0, 300)}`;
+    } else if (outcome.result.skipped) {
+      content = `## ${outcome.name}\n\n⏸️ Skipped: the PR ${skipReasonText(outcome.result.skipped.reason)} before loupe could publish. Findings were computed but not posted.`;
     } else if (!outcome.result.summaryBody) {
       content = `## ${outcome.name}\n\n_Not run: ${outcome.result.summary}_`;
     } else {
@@ -139,16 +225,13 @@ export async function runReviews(
     verify: config.verify,
     whipConfig: config.whipConfig,
     maxTurns: config.maxTurns,
-    priorComments: config.priorComments,
-    procedure: config.procedure,
+    maxComments: config.maxComments,
     full,
   };
 
-  const reviewersDone: {
-    readonly run: Promise<ReviewerOutcome>;
-    readonly readTrace: () => ReviewerTrace;
-  }[] = [];
-
+  // Build the RunInput for each reviewer (or a single default review) without
+  // posting — the orchestrator deduplicates the union before publishing.
+  const inputs: { label: string; input: ReviewRunOptions }[] = [];
   if (config.configPath) {
     let reviewers = loadReviewers(config.configPath);
     if (config.reviewerFilter) {
@@ -158,77 +241,83 @@ export async function runReviews(
       reviewers: reviewers.map((r) => r.name),
     });
     for (const r of reviewers) {
-      const collector = createTraceCollector(r.name, config.harnessName);
-      reviewersDone.push({
-        run: runOne(
-          binding,
-          {
-            ...base,
-            reviewerName: r.name,
-            guidance: r.guidance,
-            include: r.include,
-            exclude: r.exclude,
-            agentic: r.agentic,
-            evidence: r.evidence,
-            model: r.model ?? config.model,
-            reasoning: r.reasoning ?? config.reasoning,
-            profile: r.profile ?? config.profile,
-            verify: r.verify ?? config.verify,
-            pathInstructions: r.pathInstructions,
-            ensembleModels:
-              r.ensemble ??
-              (config.ensembleModels.length
-                ? config.ensembleModels
-                : undefined),
-            skills: [...new Set([...(r.skills ?? []), ...config.skills])],
-            timezone: config.timezone,
-            maxTurns: r.maxTurns ?? config.maxTurns,
-            priorComments: r.priorComments ?? config.priorComments,
-            procedure: r.procedure ?? config.procedure,
-            dirs: r.dirs ?? config.dirs,
-            deferSummary: true,
-            logger,
-          },
-          r.name,
-          logger,
-          collector.emit,
-        ),
-        readTrace: collector.read,
-      });
-    }
-  } else {
-    const collector = createTraceCollector("default", config.harnessName);
-    reviewersDone.push({
-      run: runOne(
-        binding,
-        {
+      inputs.push({
+        label: r.name,
+        input: {
           ...base,
-          model: config.model,
-          reasoning: config.reasoning,
-          profile: config.profile,
-          guidance: config.guidance,
-          ensembleModels: config.ensembleModels.length
-            ? config.ensembleModels
-            : undefined,
-          skills: config.skills.length ? config.skills : undefined,
+          reviewerName: r.name,
+          guidance: r.guidance,
+          include: r.include,
+          exclude: r.exclude,
+          agentic: r.agentic,
+          evidence: r.evidence,
+          model: r.model ?? config.model,
+          reasoning: r.reasoning ?? config.reasoning,
+          profile: r.profile ?? config.profile,
+          verify: r.verify ?? config.verify,
+          pathInstructions: r.pathInstructions,
+          ensembleModels:
+            r.ensemble ??
+            (config.ensembleModels.length ? config.ensembleModels : undefined),
+          skills: [...new Set([...(r.skills ?? []), ...config.skills])],
           timezone: config.timezone,
+          maxTurns: r.maxTurns ?? config.maxTurns,
+          maxComments: r.maxComments ?? config.maxComments,
+          priorComments: r.priorComments ?? config.priorComments,
+          procedure: r.procedure ?? config.procedure,
+          promptCache: r.promptCache ?? config.promptCache,
           deferSummary: true,
           logger,
         },
-        "default",
+      });
+    }
+  } else {
+    inputs.push({
+      label: "default",
+      input: {
+        ...base,
+        model: config.model,
+        reasoning: config.reasoning,
+        profile: config.profile,
+        guidance: config.guidance,
+        ensembleModels: config.ensembleModels.length
+          ? config.ensembleModels
+          : undefined,
+        skills: config.skills.length ? config.skills : undefined,
+        timezone: config.timezone,
+        maxComments: config.maxComments,
+        priorComments: config.priorComments,
+        procedure: config.procedure,
+        promptCache: config.promptCache,
+        deferSummary: true,
         logger,
-        collector.emit,
-      ),
-      readTrace: collector.read,
+      },
     });
   }
 
-  // All reviewers run concurrently. Each writes only into its own collector
-  // array, so there is no shared mutable buffer to race on. Wait for every
-  // outcome (success or failure) before touching the summary: the trace must
-  // reflect the whole run, including reviewers that errored mid-stream.
-  const outcomes = await Promise.all(reviewersDone.map((r) => r.run));
-  const traces = reviewersDone.map((r) => r.readTrace());
+  // PHASE 1 — produce. All reviewers run concurrently. Each writes only into
+  // its own collector array, so there is no shared mutable buffer to race on.
+  // Wait for every outcome (success or failure) before deduping or posting: the
+  // trace must reflect the whole run, including reviewers that errored mid-stream.
+  const produced: {
+    label: string;
+    input: ReviewRunOptions;
+    outcome: ProducedOutcome;
+    readTrace: () => ReviewerTrace;
+  }[] = [];
+  const collectors = inputs.map(({ label, input }) => {
+    const collector = createTraceCollector(label, config.harnessName);
+    return { label, input, collector };
+  });
+  const settled = await Promise.all(
+    collectors.map(({ label, input, collector }) =>
+      produceOne(binding, input, label, logger, collector.emit).then(
+        (outcome) => ({ label, input, outcome, readTrace: collector.read }),
+      ),
+    ),
+  );
+  for (const s of settled) produced.push(s);
+  const traces = produced.map((r) => r.readTrace());
 
   // Offline, no model calls: append the captured transcripts to the step
   // summary after outcomes have completed. No-op unless GITHUB_STEP_SUMMARY is
@@ -241,10 +330,152 @@ export async function runReviews(
     });
   }
 
+  // PHASE 2 — deduplicate the union of inline findings across reviewers so the
+  // same reworded claim posts once. Only reviewers that produced non-empty
+  // reviews contribute findings; a single reviewer (or dedup disabled) skips
+  // this and posts exactly as before.
+  const okProduced = produced.filter(
+    (p): p is typeof p & { outcome: { ok: true; produced: ProducedReview } } =>
+      p.outcome.ok,
+  );
+  const withFindings = okProduced.filter((p) => !p.outcome.produced.empty);
+  const shouldDedup = config.crossReviewerDedup && withFindings.length >= 2;
+  const deduped = shouldDedup
+    ? dedupeFindings(
+        withFindings.map((p) => ({
+          reviewer: p.label,
+          findings: [...p.outcome.produced.inline],
+        })) as ReviewerFindings[],
+      )
+    : undefined;
+  const suppressedBy = new Map<string, number>();
+  if (deduped) {
+    for (const d of deduped) suppressedBy.set(d.reviewer, d.suppressed);
+    logger.info("Cross-reviewer dedupe", {
+      reviewers: deduped.map((d) => ({
+        reviewer: d.reviewer,
+        inline: d.inline.length,
+        suppressed: d.suppressed,
+      })),
+    });
+  }
+
+  // PHASE 3 — publish. Each reviewer posts its surviving inline findings
+  // (deduped, or unchanged when dedup didn't apply). Posting is concurrent so
+  // the wall-clock cost of N reviewers' GitHub calls overlaps, matching the
+  // pre-refactor behavior. Per-reviewer markers (<!-- loupe:… -->) keep each
+  // reviewer's thread/comment management independent, so concurrent posting
+  // doesn't race on shared state.
+  const outcomes = await Promise.all(
+    produced.map((p): Promise<ReviewerOutcome> => {
+      if (!p.outcome.ok) {
+        return Promise.resolve({
+          name: p.outcome.name,
+          ok: false,
+          error: p.outcome.error,
+          kind: p.outcome.kind,
+        });
+      }
+      const producedReview = p.outcome.produced;
+      if (producedReview.empty) {
+        return Promise.resolve({
+          name: p.outcome.name,
+          ok: true,
+          result: resultFromProduced(producedReview),
+        });
+      }
+      const inline: readonly Finding[] = deduped
+        ? (deduped.find((d) => d.reviewer === p.label)?.inline ??
+          producedReview.inline)
+        : producedReview.inline;
+      const suppressed = suppressedBy.get(p.label) ?? 0;
+      const diagnostics: ReviewDiagnostics = {
+        ...producedReview.diagnostics,
+        crossReviewerDropped: suppressed,
+      };
+      const result = resultFromProduced(producedReview, inline, diagnostics);
+      // Gate each reviewer's publish on the PR still being safe to post onto
+      // (issue #39). The produce/publish split moved posting out of runReview,
+      // so the gate that runReview had must be applied here too — otherwise the
+      // multi-reviewer path posts to a merged/closed/head-moved diff. Fails open:
+      // a transient API error posts rather than dropping a completed review.
+      return checkBoundPublishable(binding, producedReview.headSha)
+        .catch(() => ({ publishable: true }) as const)
+        .then((publishable): Promise<ReviewerOutcome> => {
+          if (!publishable.publishable) {
+            logger.warn(`[${p.label}] skipping publish — PR no longer safe`, {
+              reason: publishable.reason,
+            });
+            return Promise.resolve({
+              name: p.outcome.name,
+              ok: true,
+              result: { ...result, skipped: { reason: publishable.reason } },
+            });
+          }
+          return publishBound(
+            binding,
+            p.input,
+            producedReview,
+            inline,
+            diagnostics,
+          )
+            .then((summaryBody) => {
+              logger.info(`[${p.label}] ${formatResult(result)}`);
+              return {
+                name: p.outcome.name,
+                ok: true as const,
+                result: {
+                  ...result,
+                  summaryBody,
+                  reviewedHeadSha: producedReview.headSha,
+                },
+              };
+            })
+            .catch((err: unknown) => {
+              // Publishing failed after a successful produce. Report it as a failed
+              // outcome so the combined summary surfaces it, without re-running the
+              // reviewer (the model calls already succeeded).
+              const reason = err instanceof Error ? err.message : String(err);
+              logger.error(`[${p.label}] review post failed`, {
+                error: reason,
+              });
+              return {
+                name: p.outcome.name,
+                ok: false as const,
+                error: reason,
+                kind: err instanceof HarnessError ? err.kind : undefined,
+              };
+            });
+        });
+    }),
+  );
+
+  // Gate the combined summary on the PR being still open (issue #39). The
+  // summary carries finding summaries and must not land on a PR that merged or
+  // closed while the reviewers were running; the prior summary (posted when the
+  // PR was open) stays in place rather than being overwritten on a dead diff.
+  // A head move is deliberately NOT checked here: head movement is already
+  // handled per reviewer (`checkPublishable` anchors on each reviewer's own
+  // fetched head), and a run-start head anchor would race the reviewers' own
+  // fetches and falsely skip a summary whose inline comments are valid on the
+  // current head. Fails open: a transient API error posts rather than dropping
+  // a completed review's summary.
+  const open = await checkBoundOpen(binding).catch(
+    () => ({ open: true }) as const,
+  );
+  if (!open.open) {
+    logger.warn("Skipping combined summary — PR is no longer open", {
+      reason: open.reason,
+    });
+    return outcomes;
+  }
+
   try {
     await publishCombinedSummary(binding, renderCombinedSummary(outcomes));
   } catch (err) {
-    throw new CombinedSummaryPublicationError(err);
+    // The reviewers already finished; carry their outcomes so a caller can
+    // still surface the run's status even when the summary failed to post.
+    throw new CombinedSummaryPublicationError(err, outcomes);
   }
   return outcomes;
 }

@@ -25,20 +25,20 @@ Legend — **Verified by** values:
 <!-- verifier: catalogue-start -->
 | Doc | Audience | Covers | Verified by | Last verified |
 | --- | --- | --- | --- | --- |
-| [README.md](../README.md) | users · agents | pitch, quickstart, CLI flags, `.loupe.json` overview | verify-knowledge (links) · `task check` | 2026-10-08 |
+| [README.md](../README.md) | users · agents | pitch, quickstart, CLI flags, `.loupe.json` overview | verify-knowledge (links) · `task check` | 2026-11-11 |
 | [AGENTS.md](../AGENTS.md) | agents | agent entry point: map, commands, conventions, golden principles | verify-knowledge (size, pointers) | 2026-09-01 |
 | [docs/README.md](README.md) | all | doc index | verify-knowledge (coverage) | 2026-10-20 |
-| [docs/guide.md](guide.md) | users | what loupe does, install, running a review, CLI flag table, logging | verify-knowledge (links) | 2026-10-20 |
-| [docs/configuration.md](configuration.md) | users | `.loupe.json` reviewer fields, prompt layering, agentic mode, skills, signal-to-noise | zod schema in [packages/action/src/reviewers.ts](../packages/action/src/reviewers.ts) · DEBT-003 | 2026-10-20 |
-| [docs/credentials.md](credentials.md) | users | provider chain, per-harness keys, CI secrets | [packages/credentials/src/index.ts](../packages/credentials/src/index.ts) | 2026-10-08 |
-| [docs/github-action.md](github-action.md) | users | workflow wiring, `@loupe` chat commands, inputs and env vars | [action.yml](../action.yml) | 2026-10-08 |
-| [docs/repeatability.md](repeatability.md) | users · maintainers | default evidence mode, opt-out, limits, frozen-fixture benchmark | [packages/core/tests/evidence.test.ts](../packages/core/tests/evidence.test.ts) · [packages/core/tests/run-review.test.ts](../packages/core/tests/run-review.test.ts) | 2026-10-23 |
+| [docs/guide.md](guide.md) | users | what loupe does, install, running a review, CLI flag table, logging | verify-knowledge (links) | 2026-11-11 |
+| [docs/configuration.md](configuration.md) | users | `.loupe.json` reviewer fields, prompt layering, agentic mode, skills, signal-to-noise | zod schema in [packages/action/src/reviewers.ts](../packages/action/src/reviewers.ts) · DEBT-003 | 2026-11-11 |
+| [docs/credentials.md](credentials.md) | users | provider chain, per-harness keys, CI secrets | [packages/credentials/src/index.ts](../packages/credentials/src/index.ts) | 2026-11-11 |
+| [docs/github-action.md](github-action.md) | users | workflow wiring, `@loupe` chat commands, inputs and env vars | [action.yml](../action.yml) | 2026-11-11 |
+| [docs/repeatability.md](repeatability.md) | users · maintainers | default evidence mode, opt-out, limits, frozen-fixture benchmark | [packages/core/tests/evidence.test.ts](../packages/core/tests/evidence.test.ts) · [packages/core/tests/run-review.test.ts](../packages/core/tests/run-review.test.ts) | 2026-11-11 |
 | [docs/review-traces.md](review-traces.md) | users | review traces (reasoning/tool transcripts) in the Actions step summary, local verification via `trace:preview` | [packages/action/src/trace.ts](../packages/action/src/trace.ts) · [packages/action/tests/trace.test.ts](../packages/action/tests/trace.test.ts) | 2026-09-21 |
-| [docs/gitlab.md](gitlab.md) | users | GitLab/self-hosted setup: token (masked, NOT protected — protected vars never reach MR pipelines), CI job, registry image, CLI refs, GitHub differences | [examples/gitlab-ci.yml](../examples/gitlab-ci.yml) · [packages/core/tests/gitlab.test.ts](../packages/core/tests/gitlab.test.ts) · [Dockerfile](../Dockerfile) · [.gitlab-ci.yml](../.gitlab-ci.yml) | 2026-10-08 |
-| [docs/releases.md](releases.md) | users | version pinning (`@v0` vs tag vs SHA), release process | [.github/workflows/release.yml](../.github/workflows/release.yml) | 2026-09-01 |
-| [docs/architecture.md](architecture.md) | maintainers | package layering, review pipeline, key files, extending, tests | `task check` · verify-knowledge (links) | 2026-10-20 |
+| [docs/gitlab.md](gitlab.md) | users | GitLab/self-hosted setup: token (masked, NOT protected — protected vars never reach MR pipelines), CI job, registry image, CLI refs, GitHub differences | [examples/gitlab-ci.yml](../examples/gitlab-ci.yml) · [packages/core/tests/gitlab.test.ts](../packages/core/tests/gitlab.test.ts) · [Dockerfile](../Dockerfile) · [.gitlab-ci.yml](../.gitlab-ci.yml) | 2026-11-11 |
+| [docs/releases.md](releases.md) | users | version pinning (`@v0` vs tag vs SHA), release process | [.github/workflows/release.yml](../.github/workflows/release.yml) | 2026-11-11 |
+| [docs/architecture.md](architecture.md) | maintainers | package layering, review pipeline, key files, extending, tests | `task check` · verify-knowledge (links) | 2026-11-11 |
 | [docs/how-it-works/README.md](how-it-works/README.md) | all | pipeline walkthrough with Mermaid diagrams: context, first-vs-incremental review, the review run, GitHub objects, chat, triggers; GitLab framing note | verify-knowledge (links) · [packages/core/tests/run-review.test.ts](../packages/core/tests/run-review.test.ts) | 2026-10-23 |
-| docs/knowledge-map.md | agents | this page | verify-knowledge | 2026-09-01 |
+| docs/knowledge-map.md | agents | this page | verify-knowledge | 2026-11-11 |
 <!-- verifier: catalogue-end -->
 
 ## Examples, specs, and reviewer skills
@@ -76,6 +76,7 @@ be indexed here.
 
 | Plan | What it does |
 | --- | --- |
+| [docs/plans/active/0005-upstream-v0141.md](plans/active/0005-upstream-v0141.md) | upstream v0.14.1 integration with GitLab and Admetrics behavior preserved |
 | [docs/plans/active/0003-finding-suggestions.md](plans/active/0003-finding-suggestions.md) | applyable suggestion blocks on inline findings (schema field + prompt + shared render) |
 
 **Completed**

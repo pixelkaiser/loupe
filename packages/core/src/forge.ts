@@ -18,6 +18,10 @@ export type Forge<R> = {
   repoRef(ref: R): string;
   /** Fetch PR/MR metadata and the changed files (with patches) in one place. */
   fetchPullContext(ref: R): Promise<PullContext>;
+  /** Recheck the reviewed head immediately before publishing findings. */
+  checkPublishable(ref: R, reviewedHeadSha: string): Promise<PublishCheck>;
+  /** Combined summaries must not overwrite a closed or merged review. */
+  checkOpen(ref: R): Promise<OpenCheck>;
   /**
    * Fetch the target repo's own convention docs at the PR/MR head, in
    * priority order. Concatenated so the reviewer enforces the repo's actual
@@ -76,6 +80,14 @@ export type PullContext = {
   readonly headPaths: ReadonlySet<string>;
 };
 
+export type SkipReason = "merged" | "closed" | "head-moved";
+export type PublishCheck =
+  | { readonly publishable: true }
+  | { readonly publishable: false; readonly reason: SkipReason };
+export type OpenCheck =
+  | { readonly open: true }
+  | { readonly open: false; readonly reason: "merged" | "closed" };
+
 /**
  * The outcome of the last-reviewed history lookup: either a known state
  * (with the SHA when this reviewer reviewed before) or `unknown` when the
@@ -115,4 +127,6 @@ export type PostReviewOptions = {
   readonly diagnostics?: ReviewDiagnostics;
   /** Let a higher-level orchestrator publish one summary for all reviewers. */
   readonly deferSummary?: boolean;
+  /** Findings ranked below the inline cap; still contribute to the verdict. */
+  readonly overflow?: readonly Finding[];
 };

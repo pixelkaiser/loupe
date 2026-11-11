@@ -1,8 +1,9 @@
 # GitHub Action
 
 `action.yml` is a composite action: it sets up Bun, installs loupe's deps, and
-runs the reviewer against the PR. The harness CLI must be installed by the
-consuming workflow (it is not bundled).
+runs the reviewer against the PR. Whip uses an existing compatible CLI or
+downloads the pinned, verified release. Other harnesses must be installed by
+the consuming workflow.
 
 ## Minimal workflow
 
@@ -33,6 +34,10 @@ jobs:
           config: .loupe.json
         env:
           ADMETRICS_LLM_API_KEY: ${{ secrets.ADMETRICS_LLM_API_KEY }}
+          INFERENCE_API_KEY: ${{ secrets.INFERENCE_API_KEY }}
+          # Required if .loupe.json ships a whip provider block (fail closed on
+          # an unlisted host); set it to your provider's host.
+          LOUPE_ALLOWED_PROVIDER_HOSTS: api.inference.net
 ```
 
 See `examples/review.example.yml` for whip / claude / custom-prompt
@@ -51,20 +56,28 @@ jobs:
   chat:
     if: >-
       github.event.issue.pull_request != null &&
-      contains(github.event.comment.body, '@loupe')
+      contains(github.event.comment.body, '@loupe') &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: context-labs/loupe@v0
         with: { harness: whip, config: .loupe.json }
-        env: { INFERENCE_API_KEY: ${{ secrets.INFERENCE_API_KEY }} }
+        env:
+          INFERENCE_API_KEY: ${{ secrets.INFERENCE_API_KEY }}
+          # Required if .loupe.json ships a whip provider block (fail closed).
+          LOUPE_ALLOWED_PROVIDER_HOSTS: api.inference.net
 ```
 
 Commands: `@loupe review` (re-review the whole PR), `@loupe fix` (fix all open
 Loupe findings in one commit), `@loupe fix <what>` (make a specific change and
 push it to the PR branch), `@loupe <question>` (answer grounded
 in the diff), `@loupe help`. loupe auto-detects the comment event and switches to
-chat mode; a comment without `@loupe` is ignored.
+chat mode; a comment without `@loupe` is ignored. loupe also ignores comments
+from untrusted authors (author association outside `OWNER`/`MEMBER`/`COLLABORATOR`)
+regardless of the workflow `if:`, so the `author_association` gate above is
+defense in depth. The command also requires the author to have write or admin
+permission on the repository.
 
 `@loupe fix` needs the chat job to have `permissions: contents: write` (to push)
 and only works on same-repo branches, not forks.
@@ -73,10 +86,11 @@ and only works on same-repo branches, not forks.
 
 `harness`, `model`, `reasoning`, `profile`, `verify`, `full`, `prompt-file`,
 `config`, `reviewer`, `dir`, `convention-paths`, `credential-providers`,
-`ensemble`, `skills`, `timezone`, `max-turns`, `prior-comments` (default
-`resolve`), `github-token`. Each maps to a `LOUPE_*` env var (see below); config/prompt
-paths resolve against `GITHUB_WORKSPACE` (the checkout), not the action's own
-directory.
+`ensemble`, `skills`, `timezone`, `max-turns`, `max-comments`, `cross-reviewer-dedup` (default `true`), `prompt-cache` (default
+`true`), `prior-comments` (default
+`resolve`), `github-token`. Each maps to a `LOUPE_*` env var (see below);
+config/prompt paths resolve against `GITHUB_WORKSPACE` (the checkout), not the
+action's own directory.
 
 ## Env vars
 
@@ -88,7 +102,8 @@ The entrypoint reads only these (parsed in `packages/action/src/config.ts`):
 `LOUPE_CONVENTION_PATHS`, `LOUPE_CREDENTIAL_PROVIDERS`, `LOUPE_INFISICAL_ENV`,
 `LOUPE_INFISICAL_PROJECT_ID`, `LOUPE_PROFILE`, `LOUPE_VERIFY`, `LOUPE_FULL`,
 `LOUPE_ENSEMBLE`, `LOUPE_SKILLS`, `LOUPE_TIMEZONE`, `LOUPE_MAX_TURNS`,
-`LOUPE_PRIOR_COMMENTS`.
+`LOUPE_MAX_COMMENTS`, `LOUPE_PRIOR_COMMENTS`, `LOUPE_CROSS_REVIEWER_DEDUP`, `LOUPE_PROMPT_CACHE`,
+`LOUPE_ALLOWED_PROVIDER_HOSTS` (whip provider-host allow-list; see [credentials.md](credentials.md)).
 Comment/chat mode is auto-detected from `GITHUB_EVENT_NAME` (`issue_comment` /
 `pull_request_review_comment`), which the runner sets.
 
@@ -114,9 +129,42 @@ gh api -X PUT repos/context-labs/loupe/actions/permissions/access \
 
 ## Recommended posture
 
+- **Event:** use `pull_request` (fork PRs get a read-only token and no secrets),
+  never `pull_request_target` — it exposes base-repo secrets to attacker PR-head
+  content, so loupe refuses to run under it.
 - **Advisory:** `continue-on-error: true`, not a required check — findings are PR
   comments, never a merge gate.
 - **Cadence:** `ready_for_review` + skip drafts + `concurrency: cancel-in-progress`
   so drafts are ignored and rapid pushes collapse to the latest commit.
 - **De-dup:** loupe deletes each reviewer's prior comments before re-posting, so
   re-reviews replace rather than accumulate.
+## Branching on failure
+
+The action exposes a `status` output so a workflow can detect a failed review
+even while `continue-on-error: true` keeps it advisory. Give the step an id and
+read `steps.<id>.outputs.status`:
+
+```yaml
+- id: loupe-run
+  uses: context-labs/loupe@v0
+  continue-on-error: true
+  with:
+    github-token: ${{ secrets.GITHUB_TOKEN }}
+- if: steps.loupe-run.outputs.status == 'quota'
+  run: |
+    echo "loupe hit a billing/quota limit — ping #billing"
+    # e.g. send a Slack alert or open a tracking issue
+- if: steps.loupe-run.outputs.status == 'rate-limit'
+  run: echo "loupe was throttled; consider requeuing with backoff"
+```
+
+`status` is one of `ok | quota | rate-limit | failed`:
+
+- `ok` — review completed and was posted.
+- `quota` — the provider rejected the call for a billing reason (HTTP 402,
+  insufficient balance, quota exceeded). The one-shot fallback is **not**
+  retried for this kind, so it costs one call per reviewer, not two.
+- `rate-limit` — the provider throttled the call (HTTP 429, rate limit
+  exceeded). Also not retried via the mode-switch fallback.
+- `failed` — any other failure (harness crash, transient error, etc.). The
+  agentic→one-shot fallback still runs for unclassified errors.

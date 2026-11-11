@@ -77,6 +77,7 @@ Key flags (defaults in parens): `--harness` (whip), `--model` (deepseek-flash),
 `--config <path>` (focused reviewers), `--reviewer <name>` (run just one),
 `--prompt-file <path>` (custom guidance), `--dir` (subdir scope), `--ensemble`
 (multi-model majority), `--timezone`, `--max-turns` (agentic loop cap),
+`--max-comments` (inline comment cap; extras ranked into the summary),
 `--no-verify`, `--no-agentic`,
 `--providers env,dotenv,infisical`, `--dry-run`.
 
@@ -119,7 +120,8 @@ Per-reviewer keys: `prompt`/`promptFile`, `include`/`exclude`, `model`,
 
 The config file also carries the **review defaults** that used to be repeated in
 every workflow file: `harness`, `model`, `reasoning`, `profile`, `timezone`,
-`dir`, and `maxTurns` (the agentic tool-loop cap; also per-reviewer). Precedence
+`dir`, and `maxTurns` (the agentic tool-loop cap; also per-reviewer), plus
+`maxComments` (the inline comment cap; also per-reviewer). Precedence
 is **Action input / CLI flag → `.loupe.json` → built-in
 default**, so a workflow can still override, but by default the policy lives with
 the repo.

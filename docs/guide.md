@@ -61,10 +61,12 @@ LOG_LEVEL=debug bun run packages/action/src/cli.ts review owner/repo#123 --dry-r
 | `-r, --reasoning <level>` | `low` | `low` \| `medium` \| `high`, passed to the harness natively. |
 | `--prior-comments <policy>` | `resolve` | Prior inline comments on re-review: `resolve` \| `delete` \| `keep`. |
 | `--max-turns <n>` | `10` | Cap on the agentic tool loop. |
+| `--max-comments <n>` | `10` | Max inline comments per review; extras are ranked by severity into a collapsed summary section. |
 | `--no-agentic` | (agentic on) | Review one-shot from the diff, no tool use. |
 | `--no-evidence` | off | Disable the source evidence collected by default before agentic review. |
 | `--profile <name>` | `chill` | Noise: `quiet` \| `chill` \| `assertive`. |
 | `--no-verify` | (verify on) | Skip the verification pass. |
+| `--no-prompt-cache` | (cache on) | Don't send a prompt-cache key (for models that reject `prompt_cache_key`). |
 | `--timezone <tz>` | `UTC` | Timezone label for the review environment line (e.g. `PST`). |
 | `--ensemble <models>` | — | Run several models; keep findings a majority agree on. |
 | `--full` | off | Whole-PR review instead of the incremental delta. |

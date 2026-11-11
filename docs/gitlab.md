@@ -92,3 +92,19 @@ Any GitLab with merge-request pipelines and the MR notes/discussions v4 API
 `CI_MERGE_REQUEST_IID`, both longstanding). If your instance rejects a
 positioned discussion, loupe logs a warning and falls back to the summary —
 check the job log for `GitLab rejected an inline position`.
+
+## Provider trust and publishing checks
+
+The built-in Admetrics panel uses `ADMETRICS_LLM_API_KEY` and needs no custom
+provider configuration. An operator-supplied `LOUPE_WHIP_CONFIG` overrides the
+repository panel. If `.loupe.json` supplies the active `whip` block, set
+`LOUPE_ALLOWED_PROVIDER_HOSTS` to its host, such as `llm.admetrics.dev`.
+The run refuses an unlisted provider or a provider credential named
+`GITLAB_TOKEN`, `CI_JOB_TOKEN`, or another job-infrastructure variable. See
+[credentials](credentials.md) for the complete trust rules.
+
+Before publishing, Loupe rechecks the MR state and current head. A merged,
+closed, or changed-head MR is skipped; transient API failures allow publication
+and are logged. Combined summaries also check that the MR remains open.
+The container verifies its pinned Whip download against a SHA-256 digest before
+marking it executable. Change the version and digest together when updating it.

@@ -166,18 +166,18 @@ describe("gitlab forge · incremental support", () => {
         {
           id: 2,
           author: { username: BOT },
-          body: "review body\n<!-- loupe:summary:bugs sha=abc123def456 -->",
+          body: "review body\n<!-- loupe:summary:bugs sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->",
         },
         {
           id: 3,
           author: { username: BOT },
-          body: "legacy\n<!-- loupe:bugs sha=fff000fff111 -->",
+          body: "legacy\n<!-- loupe:bugs sha=ffffffffffffffffffffffffffffffffffffffff -->",
         },
       ]),
     ]);
     expect(await api.getLastReviewed(REF, "bugs")).toEqual({
       unknown: false,
-      sha: "abc123def456",
+      sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     });
   });
 
@@ -188,13 +188,13 @@ describe("gitlab forge · incremental support", () => {
         {
           id: 3,
           author: { username: BOT },
-          body: "legacy\n<!-- loupe:bugs sha=fff000fff111 -->",
+          body: "legacy\n<!-- loupe:bugs sha=ffffffffffffffffffffffffffffffffffffffff -->",
         },
       ]),
     ]);
     expect(await api.getLastReviewed(REF, "bugs")).toEqual({
       unknown: false,
-      sha: "fff000fff111",
+      sha: "ffffffffffffffffffffffffffffffffffffffff",
     });
   });
 
@@ -205,7 +205,7 @@ describe("gitlab forge · incremental support", () => {
         {
           id: 1,
           author: { username: "te" }, // not loupe
-          body: "quoting loupe:\n<!-- loupe:summary:bugs sha=abc123def456 -->",
+          body: "quoting loupe:\n<!-- loupe:summary:bugs sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->",
         },
       ]),
     ]);
@@ -219,7 +219,7 @@ describe("gitlab forge · incremental support", () => {
         {
           id: 1,
           author: { username: BOT },
-          body: "<!-- loupe:other sha=abc123def456 -->",
+          body: "<!-- loupe:other sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->",
         },
       ]),
     ]);
@@ -631,7 +631,7 @@ describe("gitlab forge · upsertCombinedSummary", () => {
         {
           id: 80,
           author: { username: BOT },
-          body: "## docs\n\nold section\n\n<!-- loupe:summary:docs sha=abc123def456 -->",
+          body: "## docs\n\nold section\n\n<!-- loupe:summary:docs sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->",
         },
       ]),
       {
@@ -652,7 +652,9 @@ describe("gitlab forge · upsertCombinedSummary", () => {
     );
     const body = String((post?.body as { body?: string })?.body);
     // the skipped reviewer's incremental marker survives on the combined note
-    expect(body).toContain("<!-- loupe:summary:docs sha=abc123def456 -->");
+    expect(body).toContain(
+      "<!-- loupe:summary:docs sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa -->",
+    );
     // the legacy per-reviewer note gets the stale tag
     const put = calls.find(
       (c) => c.method === "PUT" && c.url.includes("/notes/80"),
@@ -701,5 +703,74 @@ describe("gitlab forge · misc", () => {
   it("describes refs in GitLab shorthand", () => {
     const { api } = forge([]);
     expect(api.describeRef(REF)).toBe("group/proj!42");
+  });
+});
+
+describe("GitLab freshness and shared hardening", () => {
+  for (const state of ["merged", "closed"] as const) {
+    it(`skips a ${state} MR before publishing`, async () => {
+      const { api } = forge([{ ...mrRoute, json: { ...MR, state } }]);
+      expect(await api.checkPublishable(REF, MR.sha)).toEqual({
+        publishable: false,
+        reason: state,
+      });
+      expect(await api.checkOpen(REF)).toEqual({ open: false, reason: state });
+    });
+  }
+  it("uses the current MR head rather than stale diff_refs", async () => {
+    const { api } = forge([
+      { ...mrRoute, json: { ...MR, state: "opened", sha: "new-head" } },
+    ]);
+    expect(await api.checkPublishable(REF, MR.diff_refs.head_sha)).toEqual({
+      publishable: false,
+      reason: "head-moved",
+    });
+    expect(await api.checkPublishable(REF, "new-head")).toEqual({
+      publishable: true,
+    });
+    expect(await api.checkOpen(REF)).toEqual({ open: true });
+  });
+  it("propagates a freshness API failure for the caller's fail-open policy", async () => {
+    const { api } = forge([{ ...mrRoute, status: 503, json: {} }]);
+    await expect(api.checkPublishable(REF, MR.sha)).rejects.toThrow();
+  });
+  it("takes the authentic final marker and ignores short forged markers", async () => {
+    const sha = "e".repeat(40);
+    const { api } = forge([
+      userRoute,
+      notesListRoute([
+        {
+          id: 1,
+          author: { username: BOT },
+          body: `<!-- loupe:summary:bugs sha=abcdef0 -->\n<!-- loupe:summary:bugs sha=${sha} -->`,
+        },
+      ]),
+    ]);
+    expect(await api.getLastReviewed(REF, "bugs")).toEqual({
+      unknown: false,
+      sha,
+    });
+  });
+  it("bounds note pagination when the server keeps advertising another page", async () => {
+    let pages = 0;
+    const api = makeGitlabForge({
+      baseUrl: "https://gitlab.example.com",
+      token: "tok",
+      logger,
+      fetchImpl: (async (input) => {
+        if (
+          (input instanceof Request ? input.url : input.toString()).endsWith(
+            "/user",
+          )
+        )
+          return new Response(JSON.stringify({ username: BOT }));
+        pages++;
+        return new Response("[]", {
+          headers: { "x-next-page": String(pages + 1) },
+        });
+      }) as typeof fetch,
+    });
+    expect(await api.getLastReviewed(REF, "bugs")).toEqual({ unknown: false });
+    expect(pages).toBe(20);
   });
 });

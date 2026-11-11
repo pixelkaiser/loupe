@@ -13,8 +13,10 @@ RUN apt-get update \
 # Pin the CLI compatible with Loupe's run/NDJSON adapter; later releases
 # renamed their assets and must be checked before upgrading the harness.
 ARG WHIP_VERSION=v0.6.5
+ARG WHIP_SHA256=c1a3a0039a648513cb68d6f2ab23152b0605f41a141c8e863d1d5c81f3c0fce9
 RUN curl -fsSL -o /usr/local/bin/whip \
   https://github.com/context-labs/whip/releases/download/${WHIP_VERSION}/whip-linux-x64 \
+  && echo "${WHIP_SHA256}  /usr/local/bin/whip" | sha256sum -c - \
   && chmod +x /usr/local/bin/whip
 
 WORKDIR /loupe

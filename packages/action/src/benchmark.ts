@@ -105,6 +105,8 @@ const forbidden = async (): Promise<never> => {
   );
 };
 const forge: Forge<null> = {
+  checkPublishable: forbidden,
+  checkOpen: forbidden,
   name: "frozen-fixture",
   describeRef: () => fixture.repo,
   repoRef: () => fixture.repo,

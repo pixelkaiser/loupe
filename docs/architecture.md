@@ -22,31 +22,29 @@ forge-shaped hangs off `forge.ts` adapters, and the entry layer picks which one.
 
 ## The review pipeline
 
-`runReview()` in `packages/core/src/index.ts` is the whole engine:
+`runReview()` in `packages/core/src/index.ts` runs one review end to end.
+The multi-reviewer orchestrator calls `produceReview()` for every profile,
+deduplicates the combined findings, then calls `publishReview()`.
 
-1. **Scope** — normalize `subdir`; prefix convention paths with it.
-2. **Fetch** (parallel) — `forge.fetchPullContext` (PR/MR + changed files with
-   patches) and `forge.fetchConventions` (repo docs at the head). Expected 404s
-   (probing optional docs) are swallowed silently by the adapters.
-3. **Filter** — keep files under `subdir` and matching `include`/`exclude`
-   (`Bun.Glob`). No files in scope → return early (reviewer skipped).
-4. **Prompt** — `agentic = req.agentic ?? true`. `buildSystemPrompt` layers
-   guidance + reasoning note + tool directive (headless vs agentic) + output
-   contract; `buildUserPrompt` is PR metadata + conventions + rendered diff.
-5. **Run** — pick `harnessCwd` (subdir if it exists on disk, else workdir, else
-   cwd; warn in agentic mode if absent). Call `harness.review(ctx)`.
-6. **Parse** — `parseReviewOutput` extracts the last JSON object and validates
-   each finding independently (one malformed finding is dropped, not fatal).
-7. **Validate** — `validateFindings` splits findings into `inline` (their
-   `path:line` is in the diff) and `dropped` (off-diff → summary notes). This is
-   what prevents a hallucinated line from 422-ing the whole review.
-8. **Post** — dry-run logs and returns; otherwise the forge deletes this
-   reviewer's prior inline comments (author- and marker-guarded), posts the
-   new inline findings, and creates or updates the reviewer's persistent
-   summary. GitHub: an empty-body review (`REQUEST_CHANGES` on any blocker,
-   else `COMMENT`) plus a summary issue comment updated in place; GitLab: one
-   positioned discussion per finding plus a summary note updated in place
-   (verdict stated in the body — no such event exists there).
+1. **Scope and fetch** — normalize directories and read the PR/MR context and
+   convention docs through `Forge`. Filter by each reviewer's include/exclude
+   patterns; an empty scope preserves prior comments.
+2. **Prepare context** — determine incremental focus, collect bounded source
+   evidence by default, and retain the full in-scope diff for fallback and
+   verification. Build the reviewer prompt and locate relevant callers.
+3. **Run and parse** — run the harness, parse each finding independently, and
+   normalize severities. Quota/rate-limit errors fail immediately; other agentic
+   failures may fall back to one-shot review with the same repository context.
+4. **Validate and verify** — anchor inline findings to the diff and apply the
+   severity profile. Verify both inline findings and PR-wide concerns after
+   ensemble merging. Verification can inspect the checkout when available.
+5. **Deduplicate and cap** — remove duplicate findings across reviewers, then
+   rank inline findings by severity. Overflow remains visible in the summary
+   and contributes to the verdict.
+6. **Publish** — check the current head and open state through the forge before
+   writing. GitHub publishes reviews and summary comments; GitLab publishes
+   positioned discussions and summary notes. Both preserve prior output when
+   a run is skipped. A separate open-state check gates the combined summary.
 
 ### core files
 
@@ -78,14 +76,14 @@ forge-shaped hangs off `forge.ts` adapters, and the entry layer picks which one.
 - `Harness` = `{ name, credentialKeys, available(), review(ctx) }`.
 - `HarnessContext` = `{ systemPrompt, userPrompt, model?, agentic?, workdir, env,
   logger }`.
-- `review` runs the CLI to completion and returns its raw stdout (the review
+- `review` runs the CLI to completion and returns its scrubbed stdout (the review
   JSON); the core parses it. Adapters stay dumb.
 - `runCli` (generic) pipes the prompt on stdin — used by `claude`
   (`--append-system-prompt`, `--model`) and `codex` (system prepended to stdin).
 - `runWhipStreaming` runs `whip run --format json` and consumes the NDJSON event
   stream live: `reasoning`/`text` deltas become throttled `thinking` /
   `streaming reply` logs, `tool_start`/`tool_end` become `tool call` logs; it
-  reassembles the assistant text from the stream. whip uses `-max-turns 40`
+  reassembles the assistant text from the stream. whip uses `-max-turns 10`
   agentic / `10` one-shot as a safety cap, `-system`, and `-m <model>`.
 - `registry()` maps name → harness; `getHarness(name)` throws with the known set.
 
