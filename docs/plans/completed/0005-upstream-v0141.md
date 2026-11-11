@@ -1,7 +1,7 @@
 ---
 id: 0005
 title: Integrate upstream v0.14.1 into the GitLab-capable fork
-status: active
+status: completed
 created: 2026-11-11
 updated: 2026-11-11
 owner: agent
@@ -34,7 +34,7 @@ and repeatability contracts that this integration must preserve.
 - [x] Resolve upstream integration; verify with TypeScript and focused tests.
 - [x] Add regression coverage for GitLab freshness and security adaptation.
 - [x] Run `task check` with Bun 1.3.14 and inspect the final diff.
-- [ ] Publish the integration branch and GitHub PR for review.
+- [x] Publish the integration branch and GitHub PR for review.
 
 ## Decision log
 
@@ -62,4 +62,7 @@ and repeatability contracts that this integration must preserve.
   concern verification, and added GitLab freshness/provider regression tests.
 - 2026-11-11 — `task check` passes with Bun 1.3.14: formatting, lint,
   TypeScript, 391 source test cases plus their compiled copies, and the
-  knowledge verifier. Local amd64 container build is being validated.
+  knowledge verifier. The linux/amd64 container build also passed.
+
+- 2026-11-11 — Published the integration in GitHub PR #1. GitHub CI and
+  advisory self-review run against its pushed head. GitLab remains unchanged.

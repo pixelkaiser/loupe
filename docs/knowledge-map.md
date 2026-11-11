@@ -76,13 +76,13 @@ be indexed here.
 
 | Plan | What it does |
 | --- | --- |
-| [docs/plans/active/0005-upstream-v0141.md](plans/active/0005-upstream-v0141.md) | upstream v0.14.1 integration with GitLab and Admetrics behavior preserved |
 | [docs/plans/active/0003-finding-suggestions.md](plans/active/0003-finding-suggestions.md) | applyable suggestion blocks on inline findings (schema field + prompt + shared render) |
 
 **Completed**
 
 | Plan | What it did |
 | --- | --- |
+| [docs/plans/completed/0005-upstream-v0141.md](plans/completed/0005-upstream-v0141.md) | upstream v0.14.1 integration with GitLab and Admetrics behavior preserved |
 | [docs/plans/completed/0004-review-repeatability.md](plans/completed/0004-review-repeatability.md) | opt-in stable evidence and a six-run comparison; no known-issue detection improvement |
 | [docs/plans/completed/0001-harness-engineering-playbook.md](plans/completed/0001-harness-engineering-playbook.md) | adopted the agent-legibility playbook: AGENTS.md, ExecPlans, this map, verifier + CI |
 | [docs/plans/completed/0002-gitlab-support.md](plans/completed/0002-gitlab-support.md) | GitLab support: `Forge` interface, GitLab adapter, CI/CLI entries, docs; verified live on a self-hosted instance (MR review with inline positioned discussions) |
