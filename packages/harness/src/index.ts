@@ -5,9 +5,17 @@ import { join } from "node:path";
 
 import type { Logger } from "@loupe/logger";
 
+import { HarnessError, classifyHarnessError } from "./errors";
 import type { HarnessTraceEvent } from "./trace";
-import { envSecretValues, redactSecrets } from "./trace";
+import { envSecretValues, forwardedSecretValues, redactSecrets } from "./trace";
+import { resolveWhipBinary } from "./whip-binary";
 
+export {
+  HarnessError,
+  classifyHarnessError,
+  isNonRetryableHarnessError,
+  type HarnessErrorKind,
+} from "./errors";
 export * from "./trace";
 
 /**
@@ -93,6 +101,54 @@ export type Harness = {
   review(ctx: HarnessContext): Promise<string>;
 };
 
+/**
+ * Minimal non-secret process-level vars a harness child needs to run. In the
+ * Action every secret is injected into process.env, so spreading `...process.env`
+ * into the child would hand every spawned harness the full secret set regardless
+ * of its declared `credentialKeys`. Build the child env explicitly from this
+ * safelist instead, merged with only the resolved credentials in `ctx.env`.
+ */
+const CHILD_ENV_SAFELIST = [
+  "PATH",
+  "HOME",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "LANG",
+  "LC_ALL",
+  "SHELL",
+  "USER",
+  // Proxy / TLS config a runner may need to reach the provider. Non-secret
+  // infrastructure settings, not credentials — a proxied/corporate runner can't
+  // make outbound HTTPS without them.
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+] as const;
+
+/**
+ * The explicit child env for a spawned harness: the safelist above plus any
+ * `WHIP_*` the parent exports, merged with `ctx.env` (the resolved
+ * credentialKeys, which also carries the materialized WHIP_HOME when set).
+ */
+function childEnv(ctxEnv: Record<string, string>): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const key of CHILD_ENV_SAFELIST) {
+    const value = process.env[key];
+    if (value !== undefined) env[key] = value;
+  }
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key.startsWith("WHIP_") && value !== undefined) env[key] = value;
+  }
+  return { ...env, ...ctxEnv };
+}
+
 function commandExists(cmd: string): Promise<boolean> {
   return new Promise((resolve) => {
     const p = spawn("which", [cmd], { stdio: "ignore" });
@@ -107,14 +163,17 @@ function commandExists(cmd: string): Promise<boolean> {
  * stdout is logged at debug on completion so an empty or non-JSON response is
  * diagnosable. A non-zero exit rejects with stderr.
  */
-function runCli(
+export function runCli(
   cmd: string,
   args: readonly string[],
   stdin: string,
   ctx: HarnessContext,
 ): Promise<string> {
   const log = ctx.logger.child(cmd);
-  const secrets = envSecretValues({ ...process.env, ...ctx.env });
+  const secrets = [
+    ...envSecretValues(process.env),
+    ...forwardedSecretValues(ctx.env),
+  ];
   const emit = (event: HarnessTraceEvent): void =>
     ctx.trace?.({
       ...event,
@@ -130,7 +189,7 @@ function runCli(
   return new Promise((resolve, reject) => {
     const child = spawn(cmd, args, {
       cwd: ctx.workdir,
-      env: { ...process.env, ...ctx.env },
+      env: childEnv(ctx.env),
     });
     let stdout = "";
     let stderr = "";
@@ -146,18 +205,23 @@ function runCli(
     });
     child.on("error", (err) => {
       emit({ type: "error", error: err.message });
-      reject(err);
+      reject(
+        new HarnessError(err instanceof Error ? err.message : String(err)),
+      );
     });
     child.on("close", (code) => {
       log.debug("Harness exited", { code, stdoutChars: stdout.length });
       log.debug("Harness stdout", { stdout });
       if (code === 0) {
         emit({ type: "done", text: stdout });
-        resolve(stdout);
+        // Redaction belongs on the value the harness RETURNS, not only on the
+        // trace copy: every publisher of the reply (PR comment, summary)
+        // inherits it from here.
+        resolve(redactSecrets(stdout, secrets));
       } else {
-        const error = `${cmd} exited ${code}: ${stderr.slice(0, 2000)}`;
-        emit({ type: "error", error });
-        reject(new Error(error));
+        const message = `${cmd} exited ${code}: ${redactSecrets(stderr.slice(0, 2000), secrets)}`;
+        emit({ type: "error", error: message });
+        reject(new HarnessError(message, classifyHarnessError(message)));
       }
     });
     child.stdin.write(stdin);
@@ -223,15 +287,19 @@ export function codexHarness(): Harness {
  * observable instead of silent. Resolves with the assembled assistant text
  * (the review JSON), so the core parses it the same as any other harness.
  */
-function runWhipStreaming(
+export function runWhipStreaming(
   args: readonly string[],
   ctx: HarnessContext,
+  binary = "whip",
 ): Promise<string> {
   const log = ctx.logger.child("whip");
   // Known secrets (resolved credential values handed to the subprocess via env)
   // are scrubbed from every trace payload downstream so an API key that happens
   // to surface in a tool result or reasoning chunk never lands in the summary.
-  const secrets = envSecretValues({ ...process.env, ...ctx.env });
+  const secrets = [
+    ...envSecretValues(process.env),
+    ...forwardedSecretValues(ctx.env),
+  ];
   const scrub = (s: string | undefined): string | undefined =>
     s === undefined ? undefined : redactSecrets(s, secrets);
   // Scrub every string field on an event (delta/args/result/text/error).
@@ -254,9 +322,9 @@ function runWhipStreaming(
     });
   log.debug("Spawning harness", { args, cwd: ctx.workdir, model: ctx.model });
   return new Promise((resolve, reject) => {
-    const child = spawn("whip", args, {
+    const child = spawn(binary, args, {
       cwd: ctx.workdir,
-      env: { ...process.env, ...ctx.env },
+      env: childEnv(ctx.env),
     });
     let buffer = ""; // partial NDJSON line
     let text = ""; // accumulated assistant reply
@@ -288,30 +356,53 @@ function runWhipStreaming(
           }
           break;
         case "text":
-          if (typeof event["delta"] === "string") text += event["delta"];
+          // Accumulate the SCRUBBED delta: the assembled `text` is what the
+          // harness returns to every downstream publisher, so redaction has to
+          // happen here, not only on the trace copy `emit` builds.
+          if (typeof event["delta"] === "string")
+            text += scrub(event["delta"]) ?? "";
           if (text.length - logged >= 120) {
             log.info("streaming reply", { chars: text.length });
             logged = text.length;
           }
           break;
         case "tool_start":
-          log.info("tool call", { name: event["name"], args: event["args"] });
+          log.info("tool call", {
+            name: event["name"],
+            // args may arrive as a string or an object; scrub a string form so
+            // a secret echoed in a tool's arguments never lands in the log.
+            args: scrub(
+              typeof event["args"] === "string"
+                ? event["args"]
+                : event["args"] === undefined
+                  ? undefined
+                  : JSON.stringify(event["args"]),
+            ),
+          });
           break;
         case "tool_end":
           log.info("tool result", {
             name: event["name"],
             result:
               typeof event["result"] === "string"
-                ? event["result"].slice(0, 300)
+                ? scrub(event["result"])?.slice(0, 300)
                 : undefined,
           });
           break;
         case "done":
-          final = typeof event["text"] === "string" ? event["text"] : text;
+          final =
+            typeof event["text"] === "string"
+              ? (scrub(event["text"]) ?? "")
+              : text;
           break;
-        case "error":
-          reject(new Error(`whip error: ${JSON.stringify(event["error"])}`));
+        case "error": {
+          // The error payload can echo provider responses or the agent's own
+          // text, which may carry a known secret; this message reaches a PR
+          // failure comment, so it is scrubbed like every other egress copy.
+          const message = `whip error: ${scrub(JSON.stringify(event["error"])) ?? ""}`;
+          reject(new HarnessError(message, classifyHarnessError(message)));
           break;
+        }
         default:
           log.debug("event", event);
       }
@@ -328,13 +419,18 @@ function runWhipStreaming(
       stderr += chunk;
       log.debug(chunk.trimEnd());
     });
-    child.on("error", reject);
+    child.on("error", (e) =>
+      reject(new HarnessError(e instanceof Error ? e.message : String(e))),
+    );
     child.on("close", (code) => {
       if (buffer.trim()) handle(buffer);
       const out = final ?? text;
       log.debug("Harness exited", { code, replyChars: out.length });
       if (code === 0) resolve(out);
-      else reject(new Error(`whip exited ${code}: ${stderr.slice(0, 2000)}`));
+      else {
+        const message = `whip exited ${code}: ${redactSecrets(stderr.slice(0, 2000), secrets)}`;
+        reject(new HarnessError(message, classifyHarnessError(message)));
+      }
     });
     child.stdin.write(ctx.userPrompt);
     child.stdin.end();
@@ -405,9 +501,16 @@ export function whipEventToTrace(raw: unknown): HarnessTraceEvent[] {
 }
 
 /**
- * Materialize a WhipConfig into a throwaway config dir and return the env
- * (WHIP_HOME) that points whip at it. Keeps loupe's `whip` block out of a
- * developer's real ~/.whip and removes the hand-written config step from CI.
+ * Materialize a WhipConfig into a throwaway config dir and return the env whip
+ * needs: WHIP_HOME (pointing at that dir) plus the one provider credential the
+ * config names via `apiKeyEnv`, forwarded from the parent process.env. whip
+ * declares no static `credentialKeys`, so without this forward the generic
+ * child-env safelist (which deliberately drops the rest of process.env) would
+ * starve whip of its provider key. The named var is already vetted on the
+ * untrusted path (BLOCKED_API_KEY_ENVS + host allow-list in enforceWhipGuard),
+ * so forwarding exactly that value — and nothing else — keeps N4's scoping.
+ * Keeps loupe's `whip` block out of a developer's real ~/.whip and removes the
+ * hand-written config step from CI.
  */
 export function materializeWhipHome(
   cfg: WhipConfig,
@@ -435,7 +538,34 @@ export function materializeWhipHome(
     ),
   };
   writeFileSync(join(dir, "config.json"), JSON.stringify(config, null, 2));
-  return { WHIP_HOME: dir };
+  const env: Record<string, string> = { WHIP_HOME: dir };
+  const apiKey = process.env[cfg.provider.apiKeyEnv];
+  if (apiKey !== undefined) env[cfg.provider.apiKeyEnv] = apiKey;
+  return env;
+}
+
+/**
+ * Decide whether a whip failure is a prompt-cache-key incompatibility worth one
+ * retry without the key. Two cases, both requiring a key was actually sent:
+ *   1. an older whip that predates the `-cache-key` flag ("flag provided but
+ *      not defined: -cache-key"); and
+ *   2. a provider that accepts the flag but rejects the resulting
+ *      `prompt_cache_key` argument as unrecognized — some OpenAI-compatible
+ *      endpoints strict-validate unknown fields. Those providers cache the
+ *      stable system prefix automatically by prefix match, so dropping the key
+ *      costs nothing and unblocks the model.
+ * Exported so the retry condition is unit-testable without spawning whip.
+ */
+export function shouldRetryWithoutCacheKey(
+  err: unknown,
+  cacheKey?: string,
+): boolean {
+  if (!cacheKey) return false;
+  const msg = String(err);
+  return (
+    /flag provided but not defined: -cache-key/.test(msg) ||
+    /prompt_cache_key/i.test(msg)
+  );
 }
 
 /**
@@ -445,13 +575,18 @@ export function materializeWhipHome(
  * `whipConfig` is supplied, loupe writes a throwaway WHIP_HOME config declaring
  * the provider + model panel instead. `-max-turns` caps the tool loop as a
  * safety net in case the model ignores the headless directive.
+ *
+ * Binary resolution: the `whip` on PATH wins; if it is absent (e.g. the
+ * upstream v1.0.0 rename to `whipcode` removed it), loupe falls back to a
+ * pinned release download so harness "whip" keeps working with no user action.
  */
 export function whipHarness(): Harness {
   return {
     name: "whip",
     credentialKeys: [],
-    available: () => commandExists("whip"),
-    review: (ctx) => {
+    available: () => resolveWhipBinary(null).then((b) => b !== null),
+    review: async (ctx) => {
+      const binary = (await resolveWhipBinary(ctx.logger)) ?? "whip";
       // Agentic reviews need room to explore the checkout with tools; headless
       // diff-only reviews should answer in one turn, capped as a safety net.
       // The agentic cap is configurable (config.json maxTurns / --max-turns).
@@ -468,7 +603,7 @@ export function whipHarness(): Harness {
         ctx.systemPrompt,
       ];
       if (ctx.model) args.push("-m", ctx.model);
-      const whipEnv = ctx.whipConfig
+      const whipEnv: Record<string, string> = ctx.whipConfig
         ? materializeWhipHome(ctx.whipConfig, ctx.reasoning)
         : {};
       if (ctx.reasoning && !ctx.whipConfig) {
@@ -485,17 +620,17 @@ export function whipHarness(): Harness {
       const withKey = ctx.cacheKey
         ? [...args, "-cache-key", ctx.cacheKey]
         : args;
-      return runWhipStreaming(withKey, runCtx).catch((err: unknown) => {
-        if (
-          ctx.cacheKey &&
-          /flag provided but not defined: -cache-key/.test(String(err))
-        ) {
+      return runWhipStreaming(withKey, runCtx, binary).catch((err: unknown) => {
+        // A reviewer that opted out via promptCache:false has cacheKey
+        // undefined, so this never fires for it — no wasted retry.
+        if (shouldRetryWithoutCacheKey(err, ctx.cacheKey)) {
           ctx.logger
             .child("whip")
             .warn(
-              "whip does not support -cache-key; retrying without it. Upgrade whip to enable prompt caching.",
+              "prompt cache key rejected; retrying without it. " +
+                "Set promptCache:false to skip this retry.",
             );
-          return runWhipStreaming(args, runCtx);
+          return runWhipStreaming(args, runCtx, binary);
         }
         throw err;
       });

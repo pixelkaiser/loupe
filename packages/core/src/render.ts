@@ -41,9 +41,9 @@ export function shaFromMarker(
   prefix: string,
 ): string | undefined {
   if (!body) return undefined;
-  const start = body.indexOf(prefix);
+  const start = body.lastIndexOf(prefix);
   if (start < 0) return undefined;
-  return /sha=([0-9a-f]{7,40})\s*-->/.exec(body.slice(start))?.[1];
+  return /sha=([0-9a-f]{40})\s*-->/.exec(body.slice(start))?.[1];
 }
 
 /** Parse only inline-finding markers, never summary markers. */
@@ -51,7 +51,7 @@ export function parseFindingMarker(
   body: string,
 ): { reviewer: string; sha: string } | undefined {
   const match =
-    /<!-- loupe:(?!summary:)([^\s]+) sha=([0-9a-f]{7,40}) -->\s*$/.exec(body);
+    /<!-- loupe:(?!summary:)([^\s]+) sha=([0-9a-f]{40}) -->\s*$/.exec(body);
   const reviewer = match?.[1];
   const sha = match?.[2];
   return reviewer && sha ? { reviewer, sha } : undefined;
@@ -82,15 +82,27 @@ export type ReviewDiagnostics = {
   readonly outOfScopeDropped: number;
   /** Inline findings removed by the noise profile. */
   readonly profileDropped: number;
-  /** Inline findings and PR-wide concerns the verification pass judged not real. */
+  /** Inline findings the verification pass judged not real. */
   readonly verifyDropped: number;
+  /** Inline findings suppressed as duplicates of a finding another reviewer owns. */
+  readonly crossReviewerDropped: number;
   /** Off-diff notes actually published under "Other notes". */
   readonly offDiff: number;
+  /** Inline findings demoted to the summary by the comment cap. */
+  readonly cappedDropped: number;
   /** Schema-rejected findings kept as notes instead of dropped. */
   readonly salvagedFindings: number;
+  /**
+   * Ensemble models that failed and were dropped from the merge so the
+   * surviving legs' findings still post. Empty (and undefined semantically)
+   * for a non-ensemble or fully-successful run; names the failed model ids
+   * otherwise, so the summary can flag the review as degraded.
+   */
+  readonly degradedLegs: readonly string[];
 };
 
 /** True when the run lost or skipped something the reader should know about. */
+
 export function isDegraded(d: ReviewDiagnostics): boolean {
   return (
     d.mode === "fallback" ||
@@ -98,7 +110,8 @@ export function isDegraded(d: ReviewDiagnostics): boolean {
     d.verify === "failed" ||
     d.incremental === "unknown" ||
     d.malformedDropped.findings + d.malformedDropped.concerns > 0 ||
-    d.salvagedFindings > 0
+    d.salvagedFindings > 0 ||
+    d.degradedLegs.length > 0
   );
 }
 
@@ -109,15 +122,26 @@ function renderDiagnostics(d: ReviewDiagnostics): string {
     }`,
     `- verification: ${d.verify}`,
     `- scope: ${d.incremental}${d.incremental === "unknown" ? " (history lookup failed; prior comments kept)" : ""}`,
-    `- dropped: ${d.malformedDropped.findings} malformed finding(s), ${d.malformedDropped.concerns} malformed concern(s), ${d.outOfScopeDropped} out of scope, ${d.profileDropped} below profile, ${d.verifyDropped} rejected by verification`,
+    `- dropped: ${d.malformedDropped.findings} malformed finding(s), ${d.malformedDropped.concerns} malformed concern(s), ${d.outOfScopeDropped} out of scope, ${d.profileDropped} below profile, ${d.verifyDropped} rejected by verification, ${d.cappedDropped} demoted by the comment cap, ${d.crossReviewerDropped} duplicate of another reviewer`,
     `- off-diff notes published: ${d.offDiff}${
       d.salvagedFindings > 0
         ? ` (${d.salvagedFindings} salvaged from malformed finding(s))`
         : ""
     }`,
+    // Only surface an ensemble row when a leg was actually lost. A clean
+    // ensemble has nothing to flag, and a non-ensemble run has no ensemble to
+    // report on — rendering "all models completed" for either would be noise
+    // (and a plain single-model review isn't an ensemble at all).
+    ...(d.degradedLegs.length > 0
+      ? [
+          `- ensemble: ⚠️ degraded — ${d.degradedLegs.length} model(s) failed and dropped: ${d.degradedLegs.join(", ")}`,
+        ]
+      : []),
   ];
   return `<details><summary>Run details</summary>\n\n${rows.join("\n")}\n\n</details>`;
 }
+
+/** One-line severity tally across inline findings + PR-level concerns. */
 
 export const SEV_EMOJI: Record<Finding["severity"], string> = {
   blocker: "🔴",
@@ -131,8 +155,9 @@ export function statLine(
   review: ReviewOutput,
   fileCount: number,
   degraded: boolean,
+  overflow: readonly Finding[] = [],
 ): string {
-  const all = [...inline, ...review.concerns];
+  const all = [...inline, ...overflow, ...review.concerns];
   const n = (s: Finding["severity"]): number =>
     all.filter((f) => f.severity === s).length;
   const bits: string[] = [];
@@ -255,7 +280,7 @@ function priorReviewerSection(
     candidates.length > 0 ? Math.min(...candidates) : priorBody.length;
   const section = priorBody.slice(start, end).trim();
   const marker = new RegExp(
-    `<!-- loupe:summary:${escaped} sha=[0-9a-f]{7,40} -->`,
+    `<!-- loupe:summary:${escaped} sha=[0-9a-f]{40} -->`,
   ).exec(section);
   return marker ? section : undefined;
 }
@@ -264,6 +289,14 @@ function priorReviewerSection(
  * Carry a skipped reviewer's last real section into the new combined summary
  * instead of overwriting it with a "_Not run_" stub.
  */
+function isNoUpdateStub(content: string): boolean {
+  const trimmed = content.trim();
+  return (
+    /^## [^\n]+\n\n_Not run: [^\n]*_$/s.test(trimmed) ||
+    /^## [^\n]+\n\n\u23F8\uFE0F Skipped: /.test(trimmed)
+  );
+}
+
 export function preserveSkippedSummarySections(
   body: string,
   priorBody?: string,
@@ -275,7 +308,7 @@ export function preserveSkippedSummarySections(
   const marked = body.replace(
     /<!-- loupe:section:([^\s]+):start -->\n([\s\S]*?)\n<!-- loupe:section:\1:end -->/g,
     (section, reviewer: string, content: string) => {
-      if (!/^## [^\n]+\n\n_Not run: [^\n]*_$/s.test(content.trim())) {
+      if (!isNoUpdateStub(content)) {
         return section;
       }
       const priorSection = priorReviewerSection(priorBody, reviewer);
@@ -288,7 +321,7 @@ export function preserveSkippedSummarySections(
   // Backward compatibility for callers/new bodies created before section
   // boundaries were introduced.
   return marked.replace(
-    /## ([^\n]+)\n\n_Not run: [^\n]*_(?=\n\n---|$)/g,
+    /## ([^\n]+)\n\n(_Not run: [^\n]*_|\u23F8\uFE0F Skipped: [^\n]*)(?=\n\n---|$)/g,
     (stub, reviewer: string) => {
       const priorSection = priorReviewerSection(priorBody, reviewer);
       return priorSection
@@ -297,3 +330,5 @@ export function preserveSkippedSummarySections(
     },
   );
 }
+
+/** Create or update the single summary assembled after parallel reviewers finish. */

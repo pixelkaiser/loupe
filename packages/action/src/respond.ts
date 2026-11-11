@@ -26,6 +26,7 @@ import type { Config } from "./config";
 import {
   CombinedSummaryPublicationError,
   runReviews,
+  skipReasonText,
   type ReviewerOutcome,
 } from "./orchestrate";
 import { loadReviewers } from "./reviewers";
@@ -57,6 +58,9 @@ async function postFailure(
 function outcomeLine(o: ReviewerOutcome): string {
   if (!o.ok) return `${o.name}: ⚠️ failed (see the failure comment)`;
   const r: ReviewResult = o.result;
+  if (r.skipped) {
+    return `${o.name}: ⏸️ skipped (PR ${skipReasonText(r.skipped.reason)})`;
+  }
   if (
     r.inlineCount === 0 &&
     r.summary.startsWith("No changed files in scope")
@@ -64,7 +68,7 @@ function outcomeLine(o: ReviewerOutcome): string {
     return `${o.name}: no changed files in scope`;
   }
   const n = (s: "blocker" | "warning" | "nit"): number =>
-    r.inline.filter((f) => f.severity === s).length;
+    [...r.inline, ...r.overflow].filter((f) => f.severity === s).length;
   const bits = [
     n("blocker") ? `🔴 ${n("blocker")}` : "",
     n("warning") ? `🟡 ${n("warning")}` : "",
@@ -72,6 +76,26 @@ function outcomeLine(o: ReviewerOutcome): string {
   ].filter(Boolean);
   const verdict = bits.length ? bits.join(" ") : "✅ no issues";
   return `${o.name}: ${verdict}${r.requestedChanges ? " (changes requested)" : ""}`;
+}
+
+/**
+ * When the PR merged or closed while an `@loupe review` re-review was running,
+ * the ack is still resolved — but with a short closure message instead of the
+ * verdict summary, so findings never land on a dead PR (issue #39). Returns the
+ * closure message, or `undefined` when the PR is still open (post the verdict).
+ * Pure so the gate is unit-testable without a network mock.
+ */
+export function closureMessageIfPrNotOpen(pr: {
+  merged: boolean;
+  state: string;
+}): string | undefined {
+  if (pr.merged) {
+    return "⏸️ Re-review ran, but the PR merged before loupe could publish — nothing was posted.";
+  }
+  if (pr.state === "closed") {
+    return "⏸️ Re-review ran, but the PR closed before loupe could publish — nothing was posted.";
+  }
+  return undefined;
 }
 
 /**
@@ -90,9 +114,14 @@ export function renderReviewCompletion(
     outcomes.every(
       (o) => o.ok && o.result.summary.startsWith("No changed files in scope"),
     );
+  const allSkipped =
+    outcomes.length > 0 &&
+    outcomes.every((o) => o.ok && o.result.skipped !== undefined);
   const scopeNote = noneInScope
     ? `\n\nNothing to review: this loupe config covers ${dirs?.length ? dirs.map((d) => `\`${d}/\``).join(", ") : "the whole repo"} and no changed file is under it.`
-    : "\n\nThe combined Loupe summary above was updated in place.";
+    : allSkipped
+      ? "\n\nThe PR changed before loupe could publish, so nothing was posted."
+      : "\n\nThe combined Loupe summary above was updated in place.";
   return `✅ Re-review of \`${headSha.slice(0, 7)}\` done.\n\n${lines}${scopeNote}`;
 }
 
@@ -138,6 +167,15 @@ async function runFix(
     return;
   }
   const headRef = pr.head.ref;
+  // headRef comes from PR metadata and is passed to git below. A ref name
+  // beginning with "-" (or carrying shell/path metacharacters) would be read as
+  // a flag or otherwise mangle the fetch/checkout/push. Git's own refname rules
+  // forbid this, so a rejection here only ever fires on a malformed/hostile ref.
+  if (!/^[A-Za-z0-9._/-]+$/.test(headRef) || headRef.startsWith("-")) {
+    throw new Error(
+      `Refusing to operate on an unexpected branch ref: ${headRef}`,
+    );
+  }
   const originalHead = pr.head.sha;
   const cwd = config.workdir;
 
@@ -169,7 +207,10 @@ async function runFix(
     whipConfig: config.whipConfig,
     maxTurns: config.maxTurns,
     reasoning: config.reasoning,
-    cacheKey: `loupe/${ref.owner}/${ref.repo}/fix`,
+    cacheKey:
+      config.promptCache !== false
+        ? `loupe/${ref.owner}/${ref.repo}/fix`
+        : undefined,
     logger,
   });
 
@@ -196,13 +237,30 @@ async function runFix(
     return;
   }
   const token = config.token;
-  const pushUrl = `https://x-access-token:${token}@github.com/${ref.owner}/${ref.repo}.git`;
-  const push = spawnSync("git", ["push", pushUrl, `HEAD:${headRef}`], {
-    cwd,
-    encoding: "utf8",
-  });
+  // Pass the token as an auth header, not in the remote URL: a URL-embedded
+  // token is visible in the process table (argv) and can echo into git's own
+  // error text. The header value never appears in a printed URL, and we still
+  // redact both the token and the encoded header from any logged stderr.
+  const authHeader = `Authorization: Basic ${Buffer.from(
+    `x-access-token:${token}`,
+  ).toString("base64")}`;
+  const push = spawnSync(
+    "git",
+    [
+      "-c",
+      `http.extraheader=${authHeader}`,
+      "push",
+      `https://github.com/${ref.owner}/${ref.repo}.git`,
+      `HEAD:${headRef}`,
+    ],
+    { cwd, encoding: "utf8" },
+  );
   if (push.status !== 0) {
-    logger.warn("Fix push failed", { stderr: push.stderr.slice(0, 500) });
+    const stderr = push.stderr
+      .slice(0, 500)
+      .replaceAll(token, "[REDACTED]")
+      .replaceAll(authHeader, "[REDACTED]");
+    logger.warn("Fix push failed", { stderr });
     await postIssueComment(
       octokit,
       ref,
@@ -218,13 +276,71 @@ async function runFix(
   );
 }
 
-/** Extract the triggering comment body from the GitHub event payload. */
-function readCommentBody(eventPath: string): string | undefined {
+/** The triggering comment plus the actor, read from the GitHub event payload. */
+interface CommentEvent {
+  body: string;
+  authorAssociation: string;
+  login: string;
+}
+
+/**
+ * Cheap pre-filter before the authoritative permission check: these author
+ * tiers *may* have push access, so they are worth an API round-trip. Everyone
+ * else is denied without one. `author_association` is not itself an authz
+ * signal — MEMBER is any org member and COLLABORATOR includes read/triage-only
+ * users — so it never stands in for the real repository permission level.
+ */
+const MAYBE_TRUSTED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+
+/** Repository permission levels that grant push access (GitHub's `permission`). */
+const PUSH_PERMISSIONS = new Set(["admin", "write"]);
+
+/**
+ * Authoritative authz for chat: the command reaches agent execution, the full
+ * job secret set, and a branch push, so the actor must hold real push access
+ * (`admin`/`write`) on the repo — not merely an org membership or a read-only
+ * collaborator slot. Fails closed: any API error denies.
+ */
+async function hasPushAccess(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  username: string,
+  logger: Logger,
+): Promise<boolean> {
+  try {
+    const { data } = await octokit.repos.getCollaboratorPermissionLevel({
+      owner,
+      repo,
+      username,
+    });
+    return PUSH_PERMISSIONS.has(data.permission);
+  } catch (err) {
+    logger.warn("Could not resolve repository permission; denying", {
+      login: username,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
+}
+
+/** Extract the triggering comment and its actor from the GitHub event payload. */
+function readCommentEvent(eventPath: string): CommentEvent | undefined {
   const event: unknown = JSON.parse(readFileSync(eventPath, "utf8"));
   const parsed = z
-    .object({ comment: z.object({ body: z.string() }).optional() })
+    .object({
+      comment: z
+        .object({
+          body: z.string(),
+          author_association: z.string(),
+          user: z.object({ login: z.string() }),
+        })
+        .optional(),
+    })
     .safeParse(event);
-  return parsed.success ? parsed.data.comment?.body : undefined;
+  if (!parsed.success || !parsed.data.comment) return undefined;
+  const { body, author_association, user } = parsed.data.comment;
+  return { body, authorAssociation: author_association, login: user.login };
 }
 
 /**
@@ -237,7 +353,7 @@ function readCommentBody(eventPath: string): string | undefined {
 export async function handleComment(
   config: Config,
   logger: Logger,
-): Promise<void> {
+): Promise<readonly ReviewerOutcome[] | undefined> {
   if (config.target.kind !== "github") {
     logger.warn("@loupe chat commands are GitHub-only for now; ignoring", {
       forge: config.target.kind,
@@ -245,15 +361,40 @@ export async function handleComment(
     return;
   }
   if (!config.eventPath) return;
-  const body = readCommentBody(config.eventPath);
-  if (!body || !MENTION.test(body)) {
+  const comment = readCommentEvent(config.eventPath);
+  if (!comment) return;
+
+  // Default-deny before any dispatch, ack, or harness spawn: the author must
+  // hold real push access on the repo, since the command reaches agent
+  // execution, the job secrets, and a branch push. `author_association` is only
+  // a cheap pre-filter; the repository permission level is the authoritative
+  // gate. Ignore silently — a comment reply here is an unauth-triggerable write.
+  const octokit = makeOctokit(config.token, logger);
+  if (
+    !MAYBE_TRUSTED_ASSOCIATIONS.has(comment.authorAssociation) ||
+    !(await hasPushAccess(
+      octokit,
+      config.target.ref.owner,
+      config.target.ref.repo,
+      comment.login,
+      logger,
+    ))
+  ) {
+    logger.warn("Ignoring @loupe comment from unauthorized author", {
+      login: comment.login,
+      authorAssociation: comment.authorAssociation,
+    });
+    return;
+  }
+
+  const body = comment.body;
+  if (!MENTION.test(body)) {
     logger.info("Comment does not mention @loupe; ignoring");
     return;
   }
 
   const instruction = body.replace(MENTION, "").trim();
   const ref = config.target.ref;
-  const octokit = makeOctokit(config.token, logger);
 
   if (/^help\b/i.test(instruction) || instruction.length === 0) {
     await postIssueComment(octokit, ref, HELP);
@@ -267,18 +408,41 @@ export async function handleComment(
       ref,
       "🔍 On it — re-reviewing this PR.",
     );
+    let outcomes: readonly ReviewerOutcome[] | undefined;
     try {
       // Reviewer failures are already reported per reviewer by runReviews;
-      // only a setup error reaches the catch below.
-      const outcomes = await runReviews(config, logger, true);
+      // only a setup error reaches the catch below. Outcomes are returned so
+      // main() can surface the run's status even when summary posting throws.
+      outcomes = await runReviews(config, logger, true);
       if (outcomes.some((o) => !o.ok)) process.exitCode = 1;
       const { data: pr } = await octokit.pulls.get(ref);
-      await updateIssueComment(
-        octokit,
-        ref,
-        ackId,
-        renderReviewCompletion(outcomes, pr.head.sha, config.dirs),
-      );
+      // Apply the same freshness rule as the combined-summary gate (issue #39):
+      // the re-review was an explicit request, so the ack should still resolve —
+      // but if the PR merged or closed while the reviewers ran, do not post the
+      // verdict summary onto a dead PR. A short closure message resolves the ack
+      // without carrying findings. This reuses the fetch already needed for the
+      // header SHA, so it adds no API call.
+      const closure = closureMessageIfPrNotOpen({
+        merged: Boolean(pr.merged),
+        state: pr.state,
+      });
+      if (closure) {
+        logger.warn(
+          "Skipping re-review completion verdict — PR no longer open",
+          {
+            merged: Boolean(pr.merged),
+            state: pr.state,
+          },
+        );
+        await updateIssueComment(octokit, ref, ackId, closure);
+      } else {
+        await updateIssueComment(
+          octokit,
+          ref,
+          ackId,
+          renderReviewCompletion(outcomes, pr.head.sha, config.dirs),
+        );
+      }
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       logger.error("Chat command failed: review", { error: reason });
@@ -291,8 +455,14 @@ export async function handleComment(
           ? `⚠️ Re-review finished, but Loupe could not publish the combined summary — ${reason.slice(0, 500)}\n\nSee the Actions run logs for details.`
           : `⚠️ Loupe could not complete the re-review — ${reason.slice(0, 500)}\n\nSee the Actions run logs for details.`,
       );
+      // Re-throw so main()'s .catch writes status (failed, or the recovered
+      // reviewer kind for a quota/rate-limit failure whose summary post threw).
+      // Without this, a chat review that fails to start leaves status empty —
+      // the same silent-green gap this PR targets, since exitCode=1 is masked
+      // by the default continue-on-error: true.
+      throw err;
     }
-    return;
+    return outcomes;
   }
 
   const fixMatch = /^fix\b[:\s]*(.*)/is.exec(instruction);
@@ -384,7 +554,10 @@ export async function handleComment(
       whipConfig: config.whipConfig,
       maxTurns: config.maxTurns,
       reasoning: config.reasoning,
-      cacheKey: `loupe/${ref.owner}/${ref.repo}/chat`,
+      cacheKey:
+        config.promptCache !== false
+          ? `loupe/${ref.owner}/${ref.repo}/chat`
+          : undefined,
       logger,
     });
     const answer = stdout.trim() || "I couldn't produce an answer for that.";

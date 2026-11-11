@@ -15,6 +15,7 @@ import {
   type CredentialProvider,
 } from "@loupe/credentials";
 import type { WhipConfig } from "@loupe/harness";
+import { createRootLogger, type Logger } from "@loupe/logger";
 import { z } from "zod";
 
 import {
@@ -49,6 +50,9 @@ const loupeEnvSchema = z.object({
     .string()
     .default("CLAUDE.md,AGENTS.md,.loupe.md,CONTRIBUTING.md"),
   LOUPE_CREDENTIAL_PROVIDERS: z.string().default("env"),
+  // Operator allow-list of permitted whip provider hosts (comma-separated).
+  // A PR-supplied provider must match this list; an empty list refuses it.
+  LOUPE_ALLOWED_PROVIDER_HOSTS: z.string().default(""),
   LOUPE_INFISICAL_ENV: z.string().optional(),
   LOUPE_INFISICAL_PROJECT_ID: z.string().optional(),
   LOUPE_DIR: optionalInput,
@@ -67,7 +71,16 @@ const loupeEnvSchema = z.object({
   LOUPE_SKILLS: z.string().default(""),
   LOUPE_TIMEZONE: optionalInput,
   LOUPE_MAX_TURNS: optionalInput,
+  LOUPE_MAX_COMMENTS: optionalInput,
   LOUPE_PRIOR_COMMENTS: optionalInput,
+  LOUPE_CROSS_REVIEWER_DEDUP: optionalInput.transform((v) =>
+    v === undefined ? undefined : v === "true",
+  ),
+  // Unset input → undefined so a .loupe.json promptCache can win; resolves true
+  // by default in loadConfig (input → file → builtin).
+  LOUPE_PROMPT_CACHE: optionalInput.transform((v) =>
+    v === undefined ? undefined : v === "true",
+  ),
 });
 
 const githubEnvSchema = loupeEnvSchema.extend({
@@ -95,6 +108,15 @@ function asMaxTurns(v: string | undefined): number | undefined {
   const n = Number(v);
   if (!Number.isInteger(n) || n <= 0) {
     throw new Error(`Invalid max-turns "${v}". Use a positive integer.`);
+  }
+  return n;
+}
+
+export function asMaxComments(v: string | undefined): number | undefined {
+  if (v === undefined) return undefined;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error(`Invalid max-comments "${v}". Use a positive integer.`);
   }
   return n;
 }
@@ -196,10 +218,15 @@ export type Config = {
   readonly timezone: string;
   readonly whipConfig?: WhipConfig;
   readonly maxTurns?: number;
+  readonly maxComments?: number;
   /** Explicit input/file value only; core defaults to "resolve". */
   readonly priorComments?: PriorComments;
   /** File value only; core defaults to true. */
   readonly procedure?: boolean;
+  /** Deduplicate the same finding across reviewers before posting (default true). */
+  readonly crossReviewerDedup: boolean;
+  /** Input → file → builtin true. false skips the prompt-cache key. */
+  readonly promptCache?: boolean;
   readonly eventName?: string;
   readonly eventPath?: string;
 };
@@ -212,7 +239,9 @@ export function isGitlabNonMrPipeline(): boolean {
   return process.env.GITLAB_CI === "true" && !process.env.CI_MERGE_REQUEST_IID;
 }
 
-export function loadConfig(): Config {
+export function loadConfig(
+  logger: Logger = createRootLogger("loupe-config"),
+): Config {
   // GitLab CI sets GITLAB_CI; anything else is GitHub (the original host, and
   // the one GitHub Actions runs on).
   if (process.env.GITLAB_CI === "true") {
@@ -229,7 +258,7 @@ export function loadConfig(): Config {
       "",
     );
     return {
-      ...sharedConfig(env, env.CI_PROJECT_DIR ?? process.cwd()),
+      ...sharedConfig(env, env.CI_PROJECT_DIR ?? process.cwd(), logger),
       target: {
         kind: "gitlab",
         ref: { project, mrIid: env.CI_MERGE_REQUEST_IID },
@@ -242,7 +271,7 @@ export function loadConfig(): Config {
   const env = githubEnvSchema.parse(process.env);
   const [owner, repo] = env.GITHUB_REPOSITORY.split("/") as [string, string];
   return {
-    ...sharedConfig(env, env.GITHUB_WORKSPACE ?? process.cwd()),
+    ...sharedConfig(env, env.GITHUB_WORKSPACE ?? process.cwd(), logger),
     target: {
       kind: "github",
       ref: {
@@ -265,6 +294,7 @@ export function loadConfig(): Config {
 function sharedConfig(
   env: z.infer<typeof loupeEnvSchema>,
   workdir: string,
+  logger: Logger,
 ): Omit<Config, "target" | "token" | "eventName" | "eventPath"> {
   // Config/prompt paths are relative to the checked-out repo, not the action's
   // own cwd (the composite action runs from its own directory).
@@ -273,9 +303,14 @@ function sharedConfig(
   const configPath = env.LOUPE_CONFIG
     ? inWorkspace(env.LOUPE_CONFIG)
     : undefined;
+  const allowedProviderHosts = env.LOUPE_ALLOWED_PROVIDER_HOSTS.split(",")
+    .map((h) => h.trim().toLowerCase())
+    .filter(Boolean);
   // Top-level review defaults from .loupe.json. Precedence for the movable
   // settings: explicit input → shared panel default → file → built-in default.
-  const file: LoupeSettings = configPath ? loadSettings(configPath) : {};
+  const file: LoupeSettings = configPath
+    ? loadSettings(configPath, { allowedProviderHosts, logger })
+    : {};
   const whipOverride = env.LOUPE_WHIP_CONFIG;
   const model =
     env.LOUPE_MODEL ??
@@ -309,9 +344,13 @@ function sharedConfig(
       .filter(Boolean),
     timezone: env.LOUPE_TIMEZONE ?? file.timezone ?? "UTC",
     maxTurns: asMaxTurns(env.LOUPE_MAX_TURNS) ?? file.maxTurns,
+    maxComments: asMaxComments(env.LOUPE_MAX_COMMENTS) ?? file.maxComments,
     priorComments:
       asPriorComments(env.LOUPE_PRIOR_COMMENTS) ?? file.priorComments,
     procedure: file.procedure,
+    crossReviewerDedup:
+      env.LOUPE_CROSS_REVIEWER_DEDUP ?? file.crossReviewerDedup ?? true,
+    promptCache: env.LOUPE_PROMPT_CACHE ?? file.promptCache,
     whipConfig: whipOverride ?? file.whip ?? builtinWhipPanel(model),
   };
 }

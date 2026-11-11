@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  asMaxComments,
   ADMETRICS_PANEL,
   builtinWhipPanel,
   DEFAULT_MODEL,
@@ -68,6 +69,7 @@ describe("shared whip provider override", () => {
     vi.stubEnv("CI_MERGE_REQUEST_IID", "1");
     vi.stubEnv("CI_PROJECT_DIR", dir);
     vi.stubEnv("LOUPE_CONFIG", ".loupe.json");
+    vi.stubEnv("LOUPE_ALLOWED_PROVIDER_HOSTS", "api.deepseek.com");
     vi.stubEnv("LOUPE_MODEL", "");
     vi.stubEnv("LOUPE_WHIP_CONFIG", JSON.stringify(ADMETRICS_PANEL));
   }
@@ -100,4 +102,41 @@ describe("shared whip provider override", () => {
     vi.stubEnv("LOUPE_WHIP_CONFIG", '{"provider":{"name":"admetrics"}}');
     expect(() => loadConfig()).toThrow();
   });
+});
+
+describe("asMaxComments env parsing", () => {
+  it("parses a valid positive integer", () => {
+    expect(asMaxComments("10")).toBe(10);
+    expect(asMaxComments("1")).toBe(1);
+  });
+
+  it("undefined means the input was not set, deferring to the file/default", () => {
+    expect(asMaxComments(undefined)).toBeUndefined();
+  });
+
+  it("rejects non-integer, zero, negative, and empty values", () => {
+    for (const bad of ["0", "-2", "2.5", "abc", "  ", "3,000"]) {
+      expect(() => asMaxComments(bad)).toThrow(/Invalid max-comments/);
+    }
+  });
+});
+
+it("honors a file-level crossReviewerDedup opt-out without an explicit env override", () => {
+  const dir = mkdtempSync(join(tmpdir(), "loupe-dedup-config-"));
+  dirs.push(dir);
+  writeFileSync(
+    join(dir, ".loupe.json"),
+    JSON.stringify({
+      crossReviewerDedup: false,
+      reviewers: [{ name: "code" }],
+    }),
+  );
+  vi.stubEnv("GITLAB_CI", "true");
+  vi.stubEnv("GITLAB_TOKEN", "test-token");
+  vi.stubEnv("CI_PROJECT_PATH", "admetrics/example");
+  vi.stubEnv("CI_MERGE_REQUEST_IID", "1");
+  vi.stubEnv("CI_PROJECT_DIR", dir);
+  vi.stubEnv("LOUPE_CONFIG", ".loupe.json");
+  vi.stubEnv("LOUPE_CROSS_REVIEWER_DEDUP", "");
+  expect(loadConfig().crossReviewerDedup).toBe(false);
 });

@@ -1,9 +1,18 @@
 import { describe, expect, it } from "vitest";
 
 import { commentableLines } from "../src/diff";
+import { buildVerifySystemPrompt } from "../src/prompt";
 import { parseReviewOutput, parseVerification } from "../src/parse";
 import { severitiesForProfile } from "../src/types";
-import { majority, mergeEnsemble } from "../src/ensemble";
+import {
+  bodySimilarity,
+  dedupeFindings,
+  dedupeNotes,
+  findingsAgree,
+  majority,
+  mergeEnsemble,
+  SIMILARITY_THRESHOLD,
+} from "../src/ensemble";
 import { validateFindings } from "../src/validate";
 
 const patch = [
@@ -251,6 +260,20 @@ describe("parseVerification", () => {
   });
 });
 
+describe("buildVerifySystemPrompt", () => {
+  it("headless mode rejects outside-diff claims instead of acquitting them", () => {
+    const prompt = buildVerifySystemPrompt();
+    expect(prompt).toContain("headless with NO repository access");
+    expect(prompt).toContain("speculative from the diff alone: reject it");
+  });
+  it("agentic mode instructs the verifier to read surrounding code", () => {
+    const prompt = buildVerifySystemPrompt({ agentic: true });
+    expect(prompt).toContain("repository access");
+    expect(prompt).toContain("READ the surrounding code");
+    expect(prompt).toContain("If the surrounding code REFUTES the claim");
+  });
+});
+
 describe("severitiesForProfile", () => {
   it("scopes severities by profile", () => {
     expect(severitiesForProfile("quiet")).toEqual(["blocker"]);
@@ -278,10 +301,378 @@ describe("mergeEnsemble", () => {
     expect(confirmed[0]!.severity).toBe("blocker"); // stronger rep kept
     expect(uncertain.map((c) => c.path).sort()).toEqual(["y.ts", "z.ts"]);
   });
+  it("matches agreements across an intervening dissimilar finding (Bugbot: clustering scan-back)", () => {
+    // Bugbot: the single-pass clusterer only compared against the LAST
+    // cluster's anchor, which held for pure line distance but not once
+    // agreement gained a textual term — a dissimilar finding between two
+    // agreeing ones started a new cluster and hid the match.
+    const f = (
+      path: string,
+      line: number,
+      body: string,
+      severity: "blocker" | "warning" | "nit" = "warning",
+    ) => ({ path, line, severity, body });
+    const a = [
+      f(
+        "x.ts",
+        10,
+        "SQL injection: user input flows into the query unparameterized",
+      ),
+    ];
+    const b = [
+      // Different bug on the same lines, from the same model — splits the stream.
+      f("x.ts", 11, "The file handle is never closed after parsing"),
+      // Same bug as a, reworded: must match x.ts:10 despite the intervening note.
+      f(
+        "x.ts",
+        12,
+        "SQL injection risk: query built from unescaped user input",
+      ),
+    ];
+    const { confirmed, uncertain } = mergeEnsemble([a, b], majority(2));
+    expect(confirmed.map((c) => `${c.path}:${c.line}`)).toEqual(["x.ts:10"]);
+    expect(uncertain.map((c) => `${c.path}:${c.line}`)).toEqual(["x.ts:11"]);
+  });
   it("majority is 2 of 2 and 2 of 3", () => {
     expect(majority(2)).toBe(2);
     expect(majority(3)).toBe(2);
     expect(majority(4)).toBe(3);
+  });
+});
+
+describe("bodySimilarity", () => {
+  it("scores rephrased agreements well above threshold, unrelated bodies at the floor", () => {
+    const rephrased = bodySimilarity(
+      "SQL injection: unsanitized user input flows directly into the query string",
+      "SQL injection risk: user input is concatenated into the SQL query without parameterization",
+    );
+    const reordered = bodySimilarity(
+      "Possible SQL injection via string concatenation; input is not escaped before query execution",
+      "Injection vulnerability: query built by concatenating unescaped user input",
+    );
+    // Calibration anchors: agreements go to the confirmed side of the
+    // threshold, same-line different bugs to the floor.
+    expect(reordered).toBeGreaterThan(SIMILARITY_THRESHOLD);
+    expect(rephrased).toBeGreaterThan(SIMILARITY_THRESHOLD);
+    const unrelated = bodySimilarity(
+      "Off-by-one error in the loop bound causes the last element to be skipped",
+      "The file handle is never closed, leaking a descriptor on every iteration",
+    );
+    expect(unrelated).toBeLessThan(SIMILARITY_THRESHOLD);
+  });
+  it("handles empty bodies", () => {
+    expect(bodySimilarity("", "")).toBe(1);
+    expect(bodySimilarity("", "type error here")).toBe(0);
+  });
+});
+
+describe("findingsAgree", () => {
+  const f = (path: string, line: number, body: string) => ({
+    path,
+    line,
+    severity: "warning" as const,
+    body,
+  });
+  it("matches the same bug rephrased across nearby lines (issue #40 regression)", () => {
+    expect(
+      findingsAgree(
+        f(
+          "auth.ts",
+          42,
+          "SQL injection: unsanitized user input flows into the query",
+        ),
+        f(
+          "auth.ts",
+          38,
+          "SQL injection risk: input concatenated into the query unparameterized",
+        ),
+      ),
+    ).toBe(true);
+  });
+  it("splits unrelated findings on the same line (issue #40 false-merge regression)", () => {
+    expect(
+      findingsAgree(
+        f(
+          "utils.ts",
+          100,
+          "Off-by-one error in the loop bound; last element skipped",
+        ),
+        f(
+          "utils.ts",
+          100,
+          "The file handle is never closed, leaking a descriptor",
+        ),
+      ),
+    ).toBe(false);
+  });
+  it("respects a smaller explicit proximity window", () => {
+    const a = f(
+      "a.ts",
+      10,
+      "Off-by-one: the loop upper bound should be items.length - 1",
+    );
+    const b = f(
+      "a.ts",
+      15,
+      "Off-by-one in the loop: bound exceeds the last index of items",
+    );
+    // Same bug 5 lines apart: agrees with the default window (5), not with a
+    // caller-supplied window of 3.
+    expect(findingsAgree(a, b, 5)).toBe(true);
+    expect(findingsAgree(a, b, 3)).toBe(false);
+  });
+  it("matches the default window's reach but not beyond it (issue #40)", () => {
+    const a = f(
+      "a.ts",
+      10,
+      "Missing null check on the parsed value before property access",
+    );
+    const close = f(
+      "a.ts",
+      14,
+      "Parsed value used without a null check; may be undefined",
+    );
+    const far = f(
+      "a.ts",
+      16,
+      "Null check missing on the parsed value before property access",
+    );
+    expect(findingsAgree(a, close)).toBe(true); // delta 4, within default 5
+    expect(findingsAgree(a, far)).toBe(false); // delta 6, beyond default 5
+  });
+  it("falls back to position-only for degenerate bodies, but only within 3 lines", () => {
+    // Tiny bodies carry < 3 trigrams: no meaningful similarity signal.
+    const echoed = f("x.ts", 10, "Bug here");
+    const echoFar = f("x.ts", 30, "?");
+    expect(findingsAgree(echoed, f("x.ts", 12, "?"))).toBe(true);
+    expect(findingsAgree(echoed, echoFar)).toBe(false);
+  });
+  it("rejects different files regardless of similarity", () => {
+    expect(
+      findingsAgree(
+        f("a.ts", 10, "identical body"),
+        f("b.ts", 10, "identical body"),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("dedupeNotes", () => {
+  const n = (path: string, body: string, line?: number) => ({
+    path,
+    severity: "warning" as const,
+    body,
+    ...(line !== undefined ? { line } : {}),
+  });
+  it("unions across models, collapsing reworded duplicates", () => {
+    const merged = dedupeNotes([
+      [n("cfg.ts", "config value read before initialization")],
+      [],
+      [
+        n("cfg.ts", "config read happens before the value is initialized"),
+        n("api.ts", "retry loop has no backoff"),
+      ],
+    ]);
+    expect(merged).toHaveLength(2);
+    expect(merged.map((m) => m.path).sort()).toEqual(["api.ts", "cfg.ts"]);
+    expect(
+      merged.some((m) => m.path === "api.ts" && m.body.includes("retry")),
+    ).toBe(true);
+  });
+  it("collapses reworded duplicates even when another note on the path sorts between them", () => {
+    // Bugbot: dedupeNotes previously sorted bodies lexicographically and only
+    // compared against the last kept note, so a third note sitting between
+    // two reworded copies hid the match.
+    const merged = dedupeNotes([
+      [n("cfg.ts", "config value read before initialization")],
+      [n("cfg.ts", "api token rotation not implemented")],
+      [n("cfg.ts", "config value is read before it is initialized")],
+    ]);
+    const cfgNotes = merged.filter((m) => m.path === "cfg.ts");
+    expect(cfgNotes).toHaveLength(2); // reworded duplicate collapses
+    expect(cfgNotes.some((m) => m.body.includes("rotation"))).toBe(true);
+  });
+  it("keeps notes whose line differs or is absent — line is not part of agreement", () => {
+    const merged = dedupeNotes([
+      [n("svc.ts", "identical off-diff note", 7)],
+      [n("svc.ts", "identical off-diff note")],
+    ]);
+    expect(merged).toHaveLength(1); // path + body agree → one note
+  });
+});
+
+describe("dedupeFindings", () => {
+  const f = (
+    path: string,
+    line: number,
+    severity: any = "warning",
+    body = `${path}:${line}`,
+  ) => ({ path, line, severity, body });
+
+  it("suppresses a reworded duplicate raised by a second reviewer", () => {
+    // Two reviewers raise the same claim on the same file/line, worded
+    // differently — the exact pattern from the issue.
+    const a = [
+      f(
+        "svc/billing.ts",
+        42,
+        "blocker",
+        "concurrent index build will fail on duplicates",
+      ),
+    ];
+    const b = [
+      f(
+        "svc/billing.ts",
+        43,
+        "warning",
+        "the unique index on this table will error if rows already exist",
+      ),
+    ];
+    const res = dedupeFindings([
+      { reviewer: "backend-critical", findings: a },
+      { reviewer: "tests", findings: b },
+    ]);
+    const ra = res[0]!;
+    const rb = res[1]!;
+    // blocker beats warning, so backend-critical owns the survivor.
+    expect(ra.inline).toHaveLength(1);
+    expect(ra.inline[0]!.severity).toBe("blocker");
+    expect(rb.inline).toHaveLength(0);
+    expect(rb.suppressed).toBe(1);
+  });
+
+  it("keeps distinct findings on the same file untouched", () => {
+    const a = [f("x.ts", 10), f("x.ts", 200)];
+    const b = [f("x.ts", 50)];
+    const res = dedupeFindings([
+      { reviewer: "bugs", findings: a },
+      { reviewer: "sec", findings: b },
+    ]);
+    const ra = res[0]!;
+    const rb = res[1]!;
+    // No two findings are within proximity, so nothing dedupes.
+    expect(ra.inline).toHaveLength(2);
+    expect(rb.inline).toHaveLength(1);
+    expect(ra.suppressed).toBe(0);
+    expect(rb.suppressed).toBe(0);
+  });
+
+  it("deduplicates a reworded copy despite an intervening dissimilar finding (Bugbot: clustering scan-back)", () => {
+    const a = [
+      f(
+        "svc/db.ts",
+        20,
+        "blocker",
+        "connection pool never returns connections on error paths",
+      ),
+    ];
+    const b = [
+      // Different bug in between — must not hide the reworded duplicate below.
+      f(
+        "svc/db.ts",
+        21,
+        "warning",
+        "query timeout is not propagated to the caller",
+      ),
+      f(
+        "svc/db.ts",
+        22,
+        "warning",
+        "connection pool leaks: connections are not freed on error",
+      ),
+    ];
+    const res = dedupeFindings([
+      { reviewer: "bugs", findings: a },
+      { reviewer: "sec", findings: b },
+    ]);
+    const ra = res[0]!;
+    const rb = res[1]!;
+    // The pool bug posts once (owned by bugs, the blocker); the timeout bug
+    // survives untouched; sec's duplicate is suppressed.
+    expect(ra.inline).toHaveLength(1);
+    expect(rb.inline).toHaveLength(1);
+    expect(rb.inline[0]!.body).toContain("timeout");
+    expect(rb.suppressed).toBe(1);
+  });
+  it("attributes the survivor to the reviewer with the strongest finding", () => {
+    const a = [f("y.ts", 5, "nit")];
+    const b = [f("y.ts", 6, "blocker")];
+    const res = dedupeFindings([
+      { reviewer: "r1", findings: a },
+      { reviewer: "r2", findings: b },
+    ]);
+    const ra = res[0]!;
+    const rb = res[1]!;
+    // blocker (r2) beats nit (r1); r2 keeps it, r1 is suppressed.
+    expect(ra.inline).toHaveLength(0);
+    expect(ra.suppressed).toBe(1);
+    expect(rb.inline).toHaveLength(1);
+    expect(rb.inline[0]!.severity).toBe("blocker");
+  });
+
+  it("returns every reviewer even when one has no findings", () => {
+    const a = [f("z.ts", 1, "warning")];
+    const res = dedupeFindings([
+      { reviewer: "r1", findings: a },
+      { reviewer: "r2", findings: [] },
+      { reviewer: "r3", findings: [] },
+    ]);
+    expect(res[0]!.inline).toHaveLength(1);
+    expect(res[1]!.inline).toHaveLength(0);
+    expect(res[2]!.inline).toHaveLength(0);
+    expect(res[1]!.suppressed).toBe(0);
+  });
+
+  it("is deterministic: the strongest finding wins regardless of reviewer order", () => {
+    // r2 raises a blocker, r1 a warning on the same spot. The blocker should
+    // own the survivor no matter which reviewer is listed first.
+    const order1 = dedupeFindings([
+      { reviewer: "r1", findings: [f("w.ts", 7, "warning", "claim")] },
+      { reviewer: "r2", findings: [f("w.ts", 7, "blocker", "claim reworded")] },
+    ]);
+    const order2 = dedupeFindings([
+      { reviewer: "r2", findings: [f("w.ts", 7, "blocker", "claim reworded")] },
+      { reviewer: "r1", findings: [f("w.ts", 7, "warning", "claim")] },
+    ]);
+    // r2 (blocker) owns the survivor in both orderings.
+    expect(order1[1]!.inline).toHaveLength(1);
+    expect(order1[1]!.inline[0]!.severity).toBe("blocker");
+    expect(order1[0]!.suppressed).toBe(1);
+    expect(order2[0]!.inline).toHaveLength(1);
+    expect(order2[0]!.inline[0]!.severity).toBe("blocker");
+    expect(order2[1]!.suppressed).toBe(1);
+  });
+
+  it("does not chain: a finding beyond proximity of the anchor starts a new cluster", () => {
+    // Three reviewers on the same file. Lines 10 and 12 are within proximity
+    // of each other (anchor = 10); line 14 is 4 lines from the anchor, so it
+    // forms its own cluster instead of chaining through 12.
+    const res = dedupeFindings([
+      { reviewer: "r1", findings: [f("c.ts", 10, "warning")] },
+      { reviewer: "r2", findings: [f("c.ts", 12, "blocker")] },
+      { reviewer: "r3", findings: [f("c.ts", 14, "warning")] },
+    ]);
+    // Cluster 1 (anchor=10): r1's warning + r2's blocker → r2 owns the survivor.
+    expect(res[0]!.suppressed).toBe(1);
+    expect(res[1]!.inline).toHaveLength(1);
+    expect(res[1]!.inline[0]!.severity).toBe("blocker");
+    // Cluster 2 (anchor=14): r3 is too far to chain → kept, not suppressed.
+    expect(res[2]!.inline).toHaveLength(1);
+    expect(res[2]!.suppressed).toBe(0);
+  });
+
+  it("merges findings within proximity of the anchor into one survivor", () => {
+    // Three reviewers, all within proximity of the anchor (line 10).
+    const res = dedupeFindings([
+      { reviewer: "r1", findings: [f("c.ts", 10, "warning")] },
+      { reviewer: "r2", findings: [f("c.ts", 11, "blocker")] },
+      { reviewer: "r3", findings: [f("c.ts", 13, "warning")] },
+    ]);
+    // All within ±3 of anchor 10 → one cluster, blocker (r2) owns the survivor.
+    expect(res[0]!.suppressed).toBe(1);
+    expect(res[1]!.inline).toHaveLength(1);
+    expect(res[1]!.inline[0]!.severity).toBe("blocker");
+    expect(res[2]!.suppressed).toBe(1);
   });
 });
 

@@ -42,12 +42,15 @@ export type GitlabForgeOptions = {
   readonly fetchImpl?: typeof fetch;
 };
 
+const MAX_PAGES = 20;
+
 type DiffRefs = { base_sha: string; start_sha: string; head_sha: string };
 type MrResponse = {
   readonly title: string;
   readonly description: string | null;
   readonly sha: string;
   readonly diff_refs: DiffRefs | null;
+  readonly state?: string;
 };
 type MrChange = { readonly new_path: string; readonly diff: string | null };
 type MrNote = {
@@ -142,7 +145,7 @@ export function makeGitlabForge(
   ): Promise<MrDiscussion[]> {
     const out: MrDiscussion[] = [];
     let page = 1;
-    for (;;) {
+    for (let pages = 0; pages < MAX_PAGES; pages++) {
       const res = await api(
         `/projects/${pid(ref)}/merge_requests/${ref.mrIid}/discussions` +
           `?order_by=created_at&sort=desc&page=${page}&per_page=100`,
@@ -158,7 +161,7 @@ export function makeGitlabForge(
   async function listNotes(ref: MergeRequestRef): Promise<MrNote[]> {
     const out: MrNote[] = [];
     let page = 1;
-    for (;;) {
+    for (let pages = 0; pages < MAX_PAGES; pages++) {
       const res = await api(
         `/projects/${pid(ref)}/merge_requests/${ref.mrIid}/notes` +
           `?order_by=created_at&sort=desc&page=${page}&per_page=100`,
@@ -176,13 +179,30 @@ export function makeGitlabForge(
     describeRef: (ref) => `${ref.project}!${ref.mrIid}`,
     repoRef: (ref) => ref.project,
 
+    checkPublishable: async (ref, reviewedHeadSha) => {
+      const mr = await getMr(ref);
+      if (mr.state === "merged")
+        return { publishable: false, reason: "merged" };
+      if (mr.state === "closed")
+        return { publishable: false, reason: "closed" };
+      if (mr.sha !== reviewedHeadSha)
+        return { publishable: false, reason: "head-moved" };
+      return { publishable: true };
+    },
+    checkOpen: async (ref) => {
+      const mr = await getMr(ref);
+      if (mr.state === "merged") return { open: false, reason: "merged" };
+      if (mr.state === "closed") return { open: false, reason: "closed" };
+      return { open: true };
+    },
+
     fetchPullContext: async (ref) => {
       const mr = await getMr(ref);
       // The changes endpoint returns an array or { changes: [...] }; paginate
       // via x-next-page like any list endpoint (single pass when unpaginated).
       const rows: MrChange[] = [];
       let page = 1;
-      for (;;) {
+      for (let pages = 0; pages < MAX_PAGES; pages++) {
         const res = await api(
           `/projects/${pid(ref)}/merge_requests/${ref.mrIid}/changes` +
             `?page=${page}&per_page=100`,
@@ -467,16 +487,24 @@ export function makeGitlabForge(
       demoted.push(...inline);
     }
 
-    const hasBlocker = [...inline, ...review.concerns].some(
-      (f) => f.severity === "blocker",
-    );
+    const hasBlocker = [
+      ...inline,
+      ...(opts.overflow ?? []),
+      ...review.concerns,
+    ].some((f) => f.severity === "blocker");
     const title = opts.reviewerName
       ? `loupe · ${opts.reviewerName}`
       : "loupe review";
     const summaryTag = makeSummaryMarker(opts.reviewerName, opts.headSha);
     const lastReviewed = `Last reviewed commit: [\`${opts.headSha.slice(0, 7)}\`](${root}/${ref.project}/-/commit/${opts.headSha})`;
     const degraded = opts.diagnostics ? isDegraded(opts.diagnostics) : false;
-    const stats = statLine(inline, review, opts.fileCount, degraded);
+    const stats = statLine(
+      inline,
+      review,
+      opts.fileCount,
+      degraded,
+      opts.overflow,
+    );
     const verdict = hasBlocker ? "⚠️ request changes" : "💬 comment";
     const body = `**Verdict:** ${verdict}\n\n${renderReviewBody(
       title,

@@ -7,6 +7,7 @@ import type {
   Forge,
   LastReviewed,
   PostReviewOptions,
+  PublishCheck,
   PullContext,
 } from "./forge";
 import {
@@ -25,6 +26,17 @@ import {
   type PriorComments,
 } from "./render";
 import type { Finding, Note, ReviewOutput } from "./types";
+
+const MAX_PAGES = 20;
+
+/** octokit.paginate map callback that stops after MAX_PAGES. One counter per call. */
+function capPages<T>(): (response: { data: T[] }, done: () => void) => T[] {
+  let pages = 0;
+  return (response, done) => {
+    if (++pages >= MAX_PAGES) done();
+    return response.data;
+  };
+}
 
 export type PullRef = {
   readonly owner: string;
@@ -69,6 +81,8 @@ export function githubForgeFor(
     describeRef: (ref) => `${ref.owner}/${ref.repo}#${ref.pull_number}`,
     repoRef: (ref) => `${ref.owner}/${ref.repo}`,
     fetchPullContext: (ref) => fetchPullContext(octokit, ref),
+    checkPublishable: (ref, sha) => checkPublishable(octokit, ref, sha),
+    checkOpen: (ref) => checkPrOpen(octokit, ref),
     fetchConventions: (ref, paths) => fetchConventions(octokit, ref, paths),
     getLastReviewed: (ref, reviewerName) =>
       getLastReviewed(octokit, ref, reviewerName),
@@ -92,10 +106,11 @@ export async function fetchPullContext(
   ref: PullRef,
 ): Promise<PullContext> {
   const { data: pr } = await octokit.pulls.get(ref);
-  const files = await octokit.paginate(octokit.pulls.listFiles, {
-    ...ref,
-    per_page: 100,
-  });
+  const files = await octokit.paginate(
+    octokit.pulls.listFiles,
+    { ...ref, per_page: 100 },
+    capPages(),
+  );
   return {
     title: pr.title,
     description: pr.body ?? "",
@@ -103,6 +118,63 @@ export async function fetchPullContext(
     headSha: pr.head.sha,
     headPaths: new Set(files.map((f) => f.filename)),
   };
+}
+
+/**
+ * Why a pre-publish review was skipped. The PR can change state between the
+ * start of a run and the moment loupe is ready to post; re-reading it right
+ * before publishing catches a merge, close, or head move that happened while
+ * inference was running. See issue #39.
+ */
+export type { SkipReason } from "./forge";
+
+/** A pre-publish freshness check result: either publishable, or why not. */
+export type { PublishCheck } from "./forge";
+
+/**
+ * Re-read the pull request right before publishing and decide whether it is
+ * still safe to post findings onto it. The review runs for minutes and the PR
+ * can merge, close, or receive a new push in that window; posting onto a dead
+ * diff reads as the author ignoring the tool when they never had a chance.
+ *
+ * `reviewedHeadSha` is the head SHA the review was computed against (captured
+ * at the start of the run). A different current head means the findings are
+ * anchored to a commit the branch has moved past, so they are not published.
+ */
+export async function checkPublishable(
+  octokit: Octokit,
+  ref: PullRef,
+  reviewedHeadSha: string,
+): Promise<PublishCheck> {
+  const { data: pr } = await octokit.pulls.get(ref);
+  if (pr.merged) return { publishable: false, reason: "merged" };
+  if (pr.state === "closed") return { publishable: false, reason: "closed" };
+  if (pr.head.sha !== reviewedHeadSha) {
+    return { publishable: false, reason: "head-moved" };
+  }
+  return { publishable: true };
+}
+
+/**
+ * Re-read the pull request and report whether it is still open (not merged, not
+ * closed). Used to gate writes that carry findings but are not anchored to a
+ * specific head — the combined summary — where a head move is already handled
+ * per reviewer (`checkPublishable`) and the only fatal state is the PR being
+ * gone. Comparing heads here would need a run-start anchor that can race the
+ * reviewers' own fetches and falsely skip a summary whose inline comments are
+ * valid on the current head, so this check deliberately ignores the head.
+ */
+export async function checkPrOpen(
+  octokit: Octokit,
+  ref: PullRef,
+): Promise<
+  | { readonly open: true }
+  | { readonly open: false; readonly reason: "merged" | "closed" }
+> {
+  const { data: pr } = await octokit.pulls.get(ref);
+  if (pr.merged) return { open: false, reason: "merged" };
+  if (pr.state === "closed") return { open: false, reason: "closed" };
+  return { open: true };
 }
 
 /** Login the workflow token posts as when `GET /user` is unavailable to it. */
@@ -154,10 +226,11 @@ export async function getLastReviewed(
       if (sha) return { unknown: false, sha };
     }
 
-    const reviews = await octokit.paginate(octokit.pulls.listReviews, {
-      ...ref,
-      per_page: 100,
-    });
+    const reviews = await octokit.paginate(
+      octokit.pulls.listReviews,
+      { ...ref, per_page: 100 },
+      capPages(),
+    );
     for (const review of reviews.reverse()) {
       if (review.user?.login !== self) continue;
       const sha = shaFromMarker(review.body, markerPrefix(reviewerName));
@@ -270,12 +343,16 @@ export async function fetchConventions(
 }
 
 async function listIssueComments(octokit: Octokit, ref: PullRef) {
-  return octokit.paginate(octokit.issues.listComments, {
-    owner: ref.owner,
-    repo: ref.repo,
-    issue_number: ref.pull_number,
-    per_page: 100,
-  });
+  return octokit.paginate(
+    octokit.issues.listComments,
+    {
+      owner: ref.owner,
+      repo: ref.repo,
+      issue_number: ref.pull_number,
+      per_page: 100,
+    },
+    capPages(),
+  );
 }
 
 /** Prior loupe comments selected for cleanup, captured before the new review posts. */
@@ -352,6 +429,7 @@ export async function listOpenLoupeFindings(
   const self = await getSelfLogin(octokit);
   const findings: OpenLoupeFinding[] = [];
   let after: string | null = null;
+  let pages = 0;
   do {
     const page: ReviewThreadsPage = await octokit.graphql(
       REVIEW_THREADS_QUERY,
@@ -390,7 +468,7 @@ export async function listOpenLoupeFindings(
       });
     }
     after = conn.pageInfo.hasNextPage ? conn.pageInfo.endCursor : null;
-  } while (after);
+  } while (after && ++pages < MAX_PAGES);
   return findings.sort(
     (a, b) =>
       a.path.localeCompare(b.path) ||
@@ -434,6 +512,7 @@ async function snapshotPriorComments(
           pull_number: ref.pull_number,
           per_page: 100,
         },
+        capPages(),
       );
       return {
         commentIds: comments
@@ -449,6 +528,7 @@ async function snapshotPriorComments(
     }
     const threadIds: string[] = [];
     let after: string | null = null;
+    let pages = 0;
     do {
       const page: ReviewThreadsPage = await octokit.graphql(
         REVIEW_THREADS_QUERY,
@@ -475,7 +555,7 @@ async function snapshotPriorComments(
         threadIds.push(t.id);
       }
       after = conn.pageInfo.hasNextPage ? conn.pageInfo.endCursor : null;
-    } while (after);
+    } while (after && ++pages < MAX_PAGES);
     return { commentIds: [], threadIds };
   } catch (err) {
     logger.warn(
@@ -597,7 +677,7 @@ export async function upsertCombinedSummary(
   const currentReviewers = new Set(
     [
       ...mergedBody.matchAll(
-        /<!-- loupe:summary:([^\s]+) sha=[0-9a-f]{7,40} -->/g,
+        /<!-- loupe:summary:([^\s]+) sha=[0-9a-f]{40} -->/g,
       ),
     ].map((match) => match[1]),
   );
@@ -605,7 +685,7 @@ export async function upsertCombinedSummary(
     .filter((comment) => comment.user?.login === self)
     .flatMap((comment) => [
       ...(comment.body?.matchAll(
-        /<!-- loupe:summary:([^\s]+) sha=[0-9a-f]{7,40} -->/g,
+        /<!-- loupe:summary:([^\s]+) sha=[0-9a-f]{40} -->/g,
       ) ?? []),
     ])
     .filter((match) => match[1] && !currentReviewers.has(match[1]))
@@ -682,9 +762,11 @@ export async function postReview(
           scopeFor(opts.refreshPaths, opts.headPaths),
         );
 
-  const hasBlocker = [...inline, ...review.concerns].some(
-    (f) => f.severity === "blocker",
-  );
+  const hasBlocker = [
+    ...inline,
+    ...(opts.overflow ?? []),
+    ...review.concerns,
+  ].some((f) => f.severity === "blocker");
   const title = opts.reviewerName
     ? `loupe · ${opts.reviewerName}`
     : "loupe review";
@@ -693,7 +775,13 @@ export async function postReview(
   const shortSha = opts.headSha.slice(0, 7);
   const lastReviewed = `Last reviewed commit: [\`${shortSha}\`](https://github.com/${ref.owner}/${ref.repo}/commit/${opts.headSha})`;
   const degraded = opts.diagnostics ? isDegraded(opts.diagnostics) : false;
-  const stats = statLine(inline, review, opts.fileCount, degraded);
+  const stats = statLine(
+    inline,
+    review,
+    opts.fileCount,
+    degraded,
+    opts.overflow,
+  );
   const summaryBody = renderReviewBody(
     title,
     stats,

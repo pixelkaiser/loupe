@@ -1,7 +1,13 @@
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { dirname } from "node:path";
 
-import type { PriorComments, Profile, ReasoningEffort } from "@loupe/core";
+import {
+  resolveWithin,
+  type PriorComments,
+  type Profile,
+  type ReasoningEffort,
+} from "@loupe/core";
+import type { Logger } from "@loupe/logger";
 import type { WhipConfig } from "@loupe/harness";
 import { z } from "zod";
 
@@ -40,10 +46,15 @@ const reviewerSchema = z
     skills: z.array(z.string()).optional(),
     /** Cap on the agentic tool loop for this reviewer (default 10). */
     maxTurns: z.number().int().positive().optional(),
+    /** Max inline comments for this reviewer; extras go to the summary (default 10). */
+    maxComments: z.number().int().positive().optional(),
     /** What to do with this reviewer's prior inline comments on a re-review. */
     priorComments: z.enum(["resolve", "delete", "keep"]).optional(),
     /** false = drop the always-on review procedure from this reviewer's prompt. */
     procedure: z.boolean().optional(),
+    /** false = don't send a prompt-cache key for this reviewer (for models whose
+     * endpoint rejects `prompt_cache_key` as an unrecognized argument). */
+    promptCache: z.boolean().optional(),
     /** Directory or directories this reviewer covers; overrides the top-level `dir`. */
     dir: z.union([z.string(), z.array(z.string())]).optional(),
   })
@@ -57,8 +68,20 @@ const reviewerSchema = z
 const whipConfigSchema = z.object({
   provider: z.object({
     name: z.string().min(1),
-    baseUrl: z.string().min(1),
-    apiKeyEnv: z.string().min(1),
+    // This block comes from the reviewed PR's config and selects where model
+    // traffic (and the chosen credential) goes, so constrain it: an https URL
+    // only (host is further checked against an operator allow-list in
+    // loadSettings), and an env-var *name* shape so a PR can't exfiltrate an
+    // arbitrary secret by naming its variable.
+    baseUrl: z
+      .string()
+      .url()
+      .refine((u) => new URL(u).protocol === "https:", {
+        message: "provider baseUrl must be an https URL",
+      }),
+    apiKeyEnv: z
+      .string()
+      .regex(/^[A-Z][A-Z0-9_]*$/, "apiKeyEnv must be an env-var name"),
     label: z.string().optional(),
   }),
   models: z.array(z.string().min(1)).min(1),
@@ -71,6 +94,69 @@ export function parseWhipConfigOverride(
 ): WhipConfig | undefined {
   if (!value?.trim()) return undefined;
   return whipConfigSchema.parse(JSON.parse(value));
+}
+
+/** Operator-controlled constraints for the PR-supplied whip provider block. */
+export type WhipGuard = {
+  /** Permitted provider hosts; empty/unset refuses any PR-supplied whip block. */
+  readonly allowedProviderHosts: readonly string[];
+  readonly logger: Logger;
+};
+
+/**
+ * Job-infrastructure secrets that are present in the harness env (it inherits
+ * `process.env`) but are never a legitimate model-provider key. `apiKeyEnv` is
+ * the variable whose VALUE whip sends to `baseUrl` as the credential, so a PR
+ * that names one of these would exfiltrate the job's own token/cloud creds to
+ * the provider host. Rejected on the untrusted-PR path regardless of the host
+ * allow-list — a shape check alone (any UPPER_SNAKE name) does not stop this.
+ */
+const BLOCKED_API_KEY_ENVS: readonly RegExp[] = [
+  /^GITLAB_/,
+  /^CI_/,
+  /^GITHUB_/,
+  /^GH_/,
+  /^ACTIONS_/,
+  /^RUNNER_/,
+  /^AWS_/,
+  /^AZURE_/,
+  /^GOOGLE_/,
+  /^GCP_/,
+  /^INFISICAL_/,
+  /^LOUPE_/,
+  /^SSH_/,
+];
+
+/**
+ * Enforce the operator constraints on the PR-supplied whip provider block.
+ * `apiKeyEnv` may never name a job-infrastructure secret. For the host:
+ * the allow-list is a hard requirement — the host must be a member, and an
+ * UNSET/empty list fails closed (the block is refused), so an operator must
+ * opt in by naming the host in `LOUPE_ALLOWED_PROVIDER_HOSTS` before a
+ * PR-supplied provider key can egress. baseUrl is already a validated https
+ * URL by the schema.
+ */
+function enforceWhipGuard(
+  whip: z.infer<typeof whipConfigSchema>,
+  guard: WhipGuard,
+): void {
+  const apiKeyEnv = whip.provider.apiKeyEnv;
+  if (BLOCKED_API_KEY_ENVS.some((re) => re.test(apiKeyEnv))) {
+    throw new Error(
+      `provider apiKeyEnv "${apiKeyEnv}" names a job-infrastructure secret and cannot be used as a provider credential`,
+    );
+  }
+  const host = new URL(whip.provider.baseUrl).host.toLowerCase();
+  if (guard.allowedProviderHosts.length === 0) {
+    throw new Error(
+      `a PR-supplied whip provider block requires LOUPE_ALLOWED_PROVIDER_HOSTS to be set; refusing to route a provider credential to unvalidated host "${host}"`,
+    );
+  }
+  if (!guard.allowedProviderHosts.includes(host)) {
+    throw new Error(
+      `provider baseUrl host "${host}" is not in the allowed provider hosts`,
+    );
+  }
 }
 
 const configSchema = z.object({
@@ -88,8 +174,12 @@ const configSchema = z.object({
   /** One directory or several; several are reviewed together from the repo root. */
   dir: z.union([z.string(), z.array(z.string())]).optional(),
   maxTurns: z.number().int().positive().optional(),
+  maxComments: z.number().int().positive().optional(),
   priorComments: z.enum(["resolve", "delete", "keep"]).optional(),
   procedure: z.boolean().optional(),
+  /** false = let the same finding post from multiple reviewers (no dedup). */
+  crossReviewerDedup: z.boolean().optional(),
+  promptCache: z.boolean().optional(),
   whip: whipConfigSchema.optional(),
 });
 
@@ -103,15 +193,27 @@ export type LoupeSettings = {
   readonly timezone?: string;
   readonly dirs?: readonly string[];
   readonly maxTurns?: number;
+  readonly maxComments?: number;
   readonly priorComments?: PriorComments;
   readonly procedure?: boolean;
+  readonly crossReviewerDedup?: boolean;
+  readonly promptCache?: boolean;
   readonly whip?: z.infer<typeof whipConfigSchema>;
 };
 
-/** Read only the top-level settings from a config file (not the reviewers). */
-export function loadSettings(configPath: string): LoupeSettings {
+/**
+ * Read only the top-level settings from a config file (not the reviewers).
+ * `guard`, when supplied, validates the PR-supplied whip provider host; callers
+ * on the untrusted-PR path (the Action) pass it, so it stays optional for the
+ * local CLI whose config is the operator's own.
+ */
+export function loadSettings(
+  configPath: string,
+  guard?: WhipGuard,
+): LoupeSettings {
   const raw: unknown = JSON.parse(readFileSync(configPath, "utf8"));
   const c = configSchema.parse(raw);
+  if (c.whip && guard) enforceWhipGuard(c.whip, guard);
   return {
     harness: c.harness,
     model: c.model,
@@ -120,8 +222,11 @@ export function loadSettings(configPath: string): LoupeSettings {
     timezone: c.timezone,
     dirs: asDirs(c.dir),
     maxTurns: c.maxTurns,
+    maxComments: c.maxComments,
     priorComments: c.priorComments,
     procedure: c.procedure,
+    crossReviewerDedup: c.crossReviewerDedup,
+    promptCache: c.promptCache,
     whip: c.whip,
   };
 }
@@ -141,8 +246,10 @@ export type Reviewer = {
   readonly ensemble?: readonly string[];
   readonly skills?: readonly string[];
   readonly maxTurns?: number;
+  readonly maxComments?: number;
   readonly priorComments?: PriorComments;
   readonly procedure?: boolean;
+  readonly promptCache?: boolean;
   readonly dirs?: readonly string[];
 };
 
@@ -171,8 +278,10 @@ export function loadReviewers(configPath: string): Reviewer[] {
     name: r.name,
     guidance:
       r.prompt ??
+      // promptFile comes from the reviewed PR's config, so contain it to the
+      // config's own directory before reading it as a reviewer system prompt.
       (r.promptFile
-        ? readFileSync(resolve(dir, r.promptFile), "utf8")
+        ? readFileSync(resolveWithin(dir, r.promptFile), "utf8")
         : undefined),
     include: r.include,
     exclude: r.exclude,
@@ -187,8 +296,10 @@ export function loadReviewers(configPath: string): Reviewer[] {
     // Top-level skills apply to every reviewer, plus any reviewer-specific ones.
     skills: [...new Set([...topSkills, ...(r.skills ?? [])])],
     maxTurns: r.maxTurns,
+    maxComments: r.maxComments,
     priorComments: r.priorComments,
     procedure: r.procedure,
+    promptCache: r.promptCache,
     dirs: asDirs(r.dir),
   }));
 }

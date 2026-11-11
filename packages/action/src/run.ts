@@ -3,12 +3,19 @@ import {
   isDegraded,
   makeGithubForge,
   makeGitlabForge,
+  produceReview,
+  publishReview,
+  reviewResultFromProduced,
   runReview,
+  type Finding,
   type Forge,
   type ForgeBinding,
   type PriorComments,
+  type ProducedReview,
   type Profile,
   type ReasoningEffort,
+  type ReviewDiagnostics,
+  type ReviewRequest,
   type ReviewResult,
 } from "@loupe/core";
 import {
@@ -49,30 +56,44 @@ export type ReviewRunOptions = {
   readonly timezone?: string;
   readonly whipConfig?: WhipConfig;
   readonly maxTurns?: number;
+  readonly maxComments?: number;
   readonly priorComments?: PriorComments;
   readonly procedure?: boolean;
+  readonly promptCache?: boolean;
   readonly deferSummary?: boolean;
   /** Optional trace sink forwarded to every harness call this review makes. */
   readonly trace?: (event: HarnessTraceEvent) => void;
   readonly logger: Logger;
 };
 
-export type RunInput<R> = ReviewRunOptions & {
+export type RunInput<R = unknown> = ReviewRunOptions & {
   readonly forge: Forge<R>;
   readonly ref: R;
 };
 
-/** Resolve the harness + its credentials, then review. Shared by Action and CLI. */
-export async function reviewPullRequest<R>(
-  input: RunInput<R>,
-): Promise<ReviewResult> {
+/** Keep the adapter and its matching ref together across generic operations. */
+export function withBinding<T>(
+  binding: ForgeBinding,
+  operation: <R>(forge: Forge<R>, ref: R) => Promise<T>,
+): Promise<T> {
+  switch (binding.kind) {
+    case "github":
+      return operation(binding.forge, binding.ref);
+    case "gitlab":
+      return operation(binding.forge, binding.ref);
+  }
+}
+
+/** Resolve the harness, verify it is installed, and forward its env. */
+async function resolveHarness<R>(input: RunInput<R>): Promise<{
+  harness: ReturnType<typeof getHarness>;
+  harnessEnv: Record<string, string>;
+}> {
   const { logger } = input;
   const harness = getHarness(input.harnessName);
-
   if (!(await harness.available())) {
     throw new Error(`Harness "${harness.name}" CLI is not installed.`);
   }
-
   // Best-effort: forward whatever credential keys the providers can supply.
   // We don't hard-fail on a missing key — harnesses often self-authenticate
   // from a local login (whip via ~/.whip, claude via its own login). If a key
@@ -88,8 +109,14 @@ export async function reviewPullRequest<R>(
     missingKeys: missing,
     providers: input.providers.map((p) => p.name),
   });
+  return { harness, harnessEnv };
+}
 
-  return runReview({
+/** Build a ReviewRequest from a RunInput (shared by produce/publish/run). */
+async function buildRequest<R>(input: RunInput<R>): Promise<ReviewRequest<R>> {
+  const { logger } = input;
+  const { harness, harnessEnv } = await resolveHarness(input);
+  return {
     forge: input.forge,
     ref: input.ref,
     harness,
@@ -115,12 +142,61 @@ export async function reviewPullRequest<R>(
     skills: input.skills,
     timezone: input.timezone,
     maxTurns: input.maxTurns,
+    maxComments: input.maxComments,
     priorComments: input.priorComments,
     procedure: input.procedure,
+    promptCache: input.promptCache,
     deferSummary: input.deferSummary,
     trace: input.trace,
     logger,
+  };
+}
+
+/** Resolve the harness + credentials, then review end-to-end. Shared by Action and CLI. */
+export async function reviewPullRequest<R>(
+  input: RunInput<R>,
+): Promise<ReviewResult> {
+  return runReview(await buildRequest(input));
+}
+
+/**
+ * Produce a review without posting it. The multi-reviewer orchestrator calls
+ * this for every reviewer, deduplicates the union of their inline findings,
+ * then posts the survivors via {@link publishReviewPullRequest}.
+ */
+export async function produceReviewPullRequest<R>(
+  input: RunInput<R>,
+): Promise<ProducedReview> {
+  return produceReview(await buildRequest(input));
+}
+
+/**
+ * Post a produced review as inline comments + (unless deferred) a summary. The
+ * orchestrator passes the deduped inline set and updated diagnostics so only
+ * surviving findings post. Returns the summary body (empty when deferred).
+ */
+export async function publishReviewPullRequest<R>(
+  input: RunInput<R>,
+  produced: ProducedReview,
+  inline: readonly Finding[],
+  diagnostics: ReviewDiagnostics,
+): Promise<string> {
+  const { logger } = input;
+  return publishReview(input.forge, input.ref, produced, logger, {
+    inline,
+    diagnostics,
+    priorComments: input.priorComments,
+    deferSummary: input.deferSummary,
   });
+}
+
+/** Build a ReviewResult from a produced review (optionally with deduped inline). */
+export function resultFromProduced(
+  produced: ProducedReview,
+  inline: readonly Finding[] = produced.inline,
+  diagnostics: ReviewDiagnostics = produced.diagnostics,
+): ReviewResult {
+  return reviewResultFromProduced(produced, inline, diagnostics);
 }
 
 /** Build the live forge adapter for a config/CLI target. The entry layer calls
@@ -176,6 +252,9 @@ export function formatResult(result: ReviewResult): string {
   const d = result.diagnostics;
   return (
     `loupe: ${result.inlineCount} inline comment(s)` +
+    (result.diagnostics.cappedDropped > 0
+      ? `, ${result.diagnostics.cappedDropped} capped (in summary)`
+      : "") +
     (result.droppedCount > 0
       ? `, ${result.droppedCount} off-diff note(s)`
       : "") +
@@ -197,8 +276,13 @@ export function renderReview(result: ReviewResult): string {
   const d = result.diagnostics;
   const lines = [
     `\nSummary: ${result.summary}\n`,
-    `Run: mode=${d.mode} verify=${d.verify} scope=${d.incremental} malformed=${d.malformedDropped.findings}/${d.malformedDropped.concerns} outOfScope=${d.outOfScopeDropped} profile=${d.profileDropped} verifyDropped=${d.verifyDropped}\n`,
+    `Run: mode=${d.mode} verify=${d.verify} scope=${d.incremental} malformed=${d.malformedDropped.findings}/${d.malformedDropped.concerns} outOfScope=${d.outOfScopeDropped} profile=${d.profileDropped} verifyDropped=${d.verifyDropped} crossReviewerDropped=${d.crossReviewerDropped}\n`,
   ];
+  if (d.cappedDropped > 0) {
+    lines.push(
+      `Capped by the comment cap (see summary): ${d.cappedDropped} finding(s) ranked below the cut`,
+    );
+  }
   for (const f of [...result.inline, ...result.dropped]) {
     lines.push(`${SEVERITY_MARK[f.severity] ?? "•"} ${anchorLabel(f)}`);
     lines.push(`   ${f.body}`);
@@ -208,6 +292,12 @@ export function renderReview(result: ReviewResult): string {
       );
     }
     lines.push("");
+  }
+  for (const f of result.overflow) {
+    lines.push(
+      `${SEVERITY_MARK[f.severity] ?? "•"} ${anchorLabel(f)} [capped]`,
+    );
+    lines.push(`   ${f.body}\n`);
   }
   return lines.join("\n");
 }
