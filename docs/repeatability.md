@@ -9,7 +9,9 @@ on every change.
 
 Evidence collection is enabled by default for agentic reviews with a real
 checkout, including GitLab CI, GitHub Actions, and the CLI. Repository tools
-remain available. One-shot and fallback reviews remain diff-only.
+remain available. If the agentic review fails, its one-shot fallback retains
+the full in-scope PR diff and the source evidence already collected. An
+explicitly one-shot review does not collect source evidence.
 
 Set `"evidence": false` on a reviewer in `.loupe.json` to opt out. The CLI
 can override reviewer settings explicitly:
@@ -82,8 +84,9 @@ keep them private. The benchmark does not save reasoning text or API keys.
 Prompt hashes reveal whether model inputs were actually identical; matching
 hashes do not make model generation deterministic.
 
-Verification only checks proposed findings. It cannot recover an issue a
-discovery pass missed. Likewise, reusing a cached review guarantees the same
+Verification checks proposed inline findings and PR-wide concerns against
+the full in-scope diff and available source evidence. It cannot recover an
+issue a discovery pass missed. Likewise, reusing a cached review guarantees the same
 answer while preserving any omissions, so this experiment does not cache
 answers. Evidence increases the initial prompt size; fewer tool calls alone
 do not establish lower inference cost. Multi-pass discovery and voting are

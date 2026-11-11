@@ -114,7 +114,7 @@ export const reviewOutputSchema = z.object({
   concerns: z.array(z.unknown()).default([]),
   highlights: z.array(z.string()).default([]),
   // Optional Mermaid diagram (body only, no fences) for a genuinely complex flow.
-  diagram: z.string().optional(),
+  diagram: z.string().nullish(),
 });
 export type ReviewOutput = {
   readonly summary: string;

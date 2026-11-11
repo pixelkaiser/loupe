@@ -25,6 +25,7 @@ import { parseReviewOutput, parseVerification } from "./parse";
 import {
   severitiesForProfile,
   type Finding,
+  type Concern,
   type Note,
   type Profile,
   type ReviewOutput,
@@ -392,7 +393,7 @@ export async function runReview<R>(
   // Agentic reviews pre-collect source evidence by default. Small diffs are
   // inlined with it; large diffs and explicit opt-outs retain the diff file.
   // Incremental reviews retain all in-scope context plus a focus list.
-  // Headless reviews (or no checkout) inline only the files under review.
+  // One-shot reviews retain the full diff and available source evidence too.
   const evidence = evidenceEnabled
     ? buildReviewEvidence(req.workdir, scopedFiles)
     : undefined;
@@ -442,7 +443,13 @@ export async function runReview<R>(
     now: req.now,
     dateOnly: evidenceEnabled,
   };
-  const headlessUserPrompt = buildUserPrompt({ ...commonPrompt, files });
+  const focusPaths = files.length < scopedFiles.length ? [...focus] : undefined;
+  const headlessUserPrompt = buildUserPrompt({
+    ...commonPrompt,
+    files: scopedFiles,
+    focusPaths,
+    evidence: evidence?.text,
+  });
   const agenticUserPrompt = treeMode
     ? buildUserPrompt({
         ...commonPrompt,
@@ -451,7 +458,7 @@ export async function runReview<R>(
         cwdSubdir: subdir && harnessCwd === scoped ? subdir : undefined,
         callSites,
         evidence: evidence?.text,
-        focusPaths: files.length < scopedFiles.length ? [...focus] : undefined,
+        focusPaths,
       })
     : headlessUserPrompt;
 
@@ -594,11 +601,23 @@ export async function runReview<R>(
     dropped = one.dropped;
     inline = one.inline;
     // Verification pass: a cheap second opinion that drops false positives.
-    if (req.verify !== false && inline.length > 0) {
-      const v = await verifyInline(req, files, inline, harnessCwd);
+    if (req.verify !== false && inline.length + review.concerns.length > 0) {
+      const v = await verifyReview(
+        req,
+        scopedFiles,
+        inline,
+        review.concerns,
+        harnessCwd,
+        evidence?.text,
+      );
       verify = v.status;
-      verifyDropped = inline.length - v.kept.length;
-      inline = v.kept;
+      verifyDropped =
+        inline.length +
+        review.concerns.length -
+        v.findings.length -
+        v.concerns.length;
+      inline = v.findings;
+      review = { ...review, concerns: v.concerns };
     }
   }
 
@@ -689,20 +708,28 @@ export async function runReview<R>(
 }
 
 /**
- * Ask the harness to judge each finding real or not; drop the ones it rejects.
+ * Ask the harness to judge each finding and concern; drop the ones it rejects.
  * One-shot (never agentic). Fail-open: an error or an incomplete/invalid
- * verdict set keeps every finding and reports why.
+ * verdict set keeps every finding and concern and reports why.
  */
-async function verifyInline<R>(
+async function verifyReview<R>(
   req: ReviewRequest<R>,
   files: readonly { path: string; patch: string | undefined }[],
   findings: readonly Finding[],
+  concerns: readonly Concern[],
   harnessCwd: string,
-): Promise<{ kept: Finding[]; status: ReviewDiagnostics["verify"] }> {
+  evidence?: string,
+): Promise<{
+  findings: Finding[];
+  concerns: Concern[];
+  status: ReviewDiagnostics["verify"];
+}> {
+  const keepAll = { findings: [...findings], concerns: [...concerns] };
+  const count = findings.length + concerns.length;
   try {
     const stdout = await req.harness.review({
       systemPrompt: buildVerifySystemPrompt(),
-      userPrompt: buildVerifyUserPrompt(findings, files),
+      userPrompt: buildVerifyUserPrompt(findings, files, concerns, evidence),
       model: req.model,
       agentic: false,
       workdir: harnessCwd,
@@ -715,12 +742,15 @@ async function verifyInline<R>(
       phase: req.model ? `verify:${req.model}` : "verify",
       logger: req.logger,
     });
-    const result = parseVerification(stdout, findings.length);
+    const result = parseVerification(stdout, count);
     if (!result.valid) {
-      req.logger.warn("Verification output invalid; keeping all findings", {
-        reasons: result.reasons,
-      });
-      return { kept: [...findings], status: "invalid" };
+      req.logger.warn(
+        "Verification output invalid; keeping all findings and concerns",
+        {
+          reasons: result.reasons,
+        },
+      );
+      return { ...keepAll, status: "invalid" };
     }
     const kept: Finding[] = [];
     findings.forEach((f, i) => {
@@ -735,17 +765,29 @@ async function verifyInline<R>(
         kept.push(f);
       }
     });
+    const keptConcerns = concerns.filter((concern, i) => {
+      const verdict = result.verdicts.get(findings.length + i);
+      if (verdict?.real !== false) return true;
+      req.logger.info("Verification rejected a concern", {
+        title: concern.title,
+        reason: verdict.reason,
+      });
+      return false;
+    });
     req.logger.info("Verification pass", {
-      before: findings.length,
-      after: kept.length,
-      dropped: findings.length - kept.length,
+      before: count,
+      after: kept.length + keptConcerns.length,
+      dropped: count - kept.length - keptConcerns.length,
     });
-    return { kept, status: "passed" };
+    return { findings: kept, concerns: keptConcerns, status: "passed" };
   } catch (err) {
-    req.logger.warn("Verification pass failed; keeping all findings", {
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return { kept: [...findings], status: "failed" };
+    req.logger.warn(
+      "Verification pass failed; keeping all findings and concerns",
+      {
+        error: err instanceof Error ? err.message : String(err),
+      },
+    );
+    return { ...keepAll, status: "failed" };
   }
 }
 

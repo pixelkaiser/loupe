@@ -1,7 +1,7 @@
 import type { ReasoningEffort } from "@loupe/harness";
 
 import { renderDiff, renderFileTree, type DiffFile } from "./diff";
-import type { Finding, Profile } from "./types";
+import type { Concern, Finding, Profile } from "./types";
 
 export type { ReasoningEffort };
 
@@ -142,9 +142,11 @@ const PROFILE_DIRECTIVE: Record<Profile, string> = {
 };
 
 const HEADLESS_DIRECTIVE = `
-You are running headless with NO repository access. Do NOT call tools or attempt
-to read files — you cannot, and any tool call wastes the run. Base the entire
-review on the diff in the user message.`.trim();
+This is a one-shot review of the supplied diff and source evidence. Do NOT call
+tools or attempt to read additional files in this pass. Files and code omitted
+from the supplied context are unknown, not missing: do not infer that an
+implementation, dependency, or fixture does not exist just because it is not
+shown. Report only issues supported by the supplied context.`.trim();
 
 const AGENTIC_DIRECTIVE = `
 You HAVE repository access: the full checkout is your working directory and you
@@ -343,19 +345,19 @@ export function buildUserPrompt(input: UserPromptInput): string {
 }
 
 /**
- * Verification pass prompts. Given the diff and the proposed findings, ask the
- * model to judge each one real or not — a cheap second opinion that cuts false
- * positives. Always headless/one-shot.
+ * Verification pass prompts. Judge inline findings and PR-wide concerns against
+ * the full in-scope diff and available source evidence. Always one-shot.
  */
 export function buildVerifySystemPrompt(): string {
   return [
-    "You are a strict reviewer verifying another reviewer's findings against a diff.",
-    "For each finding, decide if it is a REAL, correct issue that a careful engineer would agree with.",
-    "Reject a finding only when the supplied diff demonstrates it is incorrect, or it duplicates another finding.",
-    'Missing supporting code is not evidence that a finding is false. If judging it requires code outside the diff, return real: true with reason "outside-diff", unless the diff itself refutes the claim.',
+    "You are a strict reviewer verifying another reviewer's findings and PR-wide concerns against the supplied diff and source evidence.",
+    "Do NOT call tools or read additional files in this pass.",
+    "For each indexed finding or concern, decide if it is a REAL, correct issue that a careful engineer would agree with.",
+    "Reject an issue only when the supplied context demonstrates it is incorrect, or it duplicates another issue.",
+    'Missing supporting code is not evidence that a finding is false. If judging it requires code outside the supplied context, return real: true with reason "outside-diff", unless the supplied context itself refutes the claim.',
     "Respond with ONE JSON object and nothing else:",
     '{ "verdicts": [ { "index": <finding index>, "real": true|false, "reason": "<short>" } ] }',
-    "Include a verdict for every finding index.",
+    "Include a verdict for every finding and concern index.",
   ].join("\n");
 }
 
@@ -429,9 +431,25 @@ export function buildFixUserPrompt(
 export function buildVerifyUserPrompt(
   findings: readonly Finding[],
   files: readonly DiffFile[],
+  concerns: readonly Concern[] = [],
+  evidence?: string,
 ): string {
-  const list = findings
-    .map((f, i) => `#${i} [${f.severity}] ${f.path}:${f.line}\n${f.body}`)
+  const list = [
+    ...findings.map(
+      (f, i) => `#${i} [${f.severity}] ${f.path}:${f.line}\n${f.body}`,
+    ),
+    ...concerns.map(
+      (c, i) =>
+        `#${findings.length + i} [${c.severity}] PR-wide concern: ${c.title}\n${c.detail}`,
+    ),
+  ].join("\n\n");
+  return [
+    "Diff:",
+    renderDiff(files),
+    evidence,
+    "Findings and concerns to verify:",
+    list,
+  ]
+    .filter(Boolean)
     .join("\n\n");
-  return ["Diff:", renderDiff(files), "Findings to verify:", list].join("\n\n");
 }

@@ -82,7 +82,7 @@ export type ReviewDiagnostics = {
   readonly outOfScopeDropped: number;
   /** Inline findings removed by the noise profile. */
   readonly profileDropped: number;
-  /** Inline findings the verification pass judged not real. */
+  /** Inline findings and PR-wide concerns the verification pass judged not real. */
   readonly verifyDropped: number;
   /** Off-diff notes actually published under "Other notes". */
   readonly offDiff: number;
